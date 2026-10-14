@@ -261,6 +261,8 @@ def render_live():
 
     # ── hero (iOS Weather style) ─────────────────────────────────────────────
     station_line = ""
+    if not stn and data.waqi_token():
+        station_line = (f'<div class="station-pill" style="opacity:.85">🛰️ {t("No live station reporting nearby — showing the model estimate")}</div>')
     if stn:
         s_val = stn["in_aqi"] if standard == "India (CPCB)" and stn["in_aqi"] is not None else stn["us_aqi"]
         s_std = "India (CPCB)" if standard == "India (CPCB)" and stn["in_aqi"] is not None else "US (EPA)"
