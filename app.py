@@ -1,4 +1,23 @@
 """AQIfyMe — verified air-quality information for Delhi. Run with:  streamlit run app.py"""
+# Streamlit re-runs this script on every change but keeps already-imported helper modules in memory. After a deploy
+# that would mix new app code with stale helpers (→ ImportError), so reload any project module whose file changed.
+import importlib as _il
+import os as _os
+import sys as _sys
+
+_HERE = _os.path.dirname(_os.path.abspath(__file__))
+for _name in ["i18n", "locations", "aqi", "browser_js", "station", "data", "ui", "sky", "expand", "intro", "details",
+              "causes", "planner", "health_log", "sharecard"]:      # dependency order
+    _mod = _sys.modules.get(_name)
+    _f = getattr(_mod, "__file__", "") or ""
+    if _mod and _f.startswith(_HERE):
+        try:
+            _mtime = _os.path.getmtime(_f)
+            if _mtime > getattr(_mod, "_aqf_mtime", 0):      # first sight or file changed → load the current code
+                _il.reload(_mod)
+                _mod._aqf_mtime = _mtime
+        except Exception:
+            pass
 from datetime import date, timedelta
 
 import numpy as np
