@@ -141,14 +141,49 @@ def is_local():
     return host in ("localhost", "127.0.0.1", "::1", "")
 
 
+MAX_STATION_KM = 20
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def waqi_nearby(token: str, lat: float, lon: float, box: float = 0.2) -> pd.DataFrame:
+    """Reporting stations in a small box around a point (WAQI's geo lookup can return far-away stations)."""
+    js = _get(f"{WAQI_URL}/map/bounds/", {"latlng": f"{lat - box},{lon - box},{lat + box},{lon + box}", "token": token})
+    if js.get("status") != "ok":
+        raise RuntimeError(js.get("data", "WAQI error"))
+    rows = []
+    for s_ in js["data"]:
+        try:
+            rows.append({"uid": s_["uid"], "lat": s_["lat"], "lon": s_["lon"], "aqi": float(s_["aqi"])})
+        except (TypeError, ValueError):
+            continue
+    return pd.DataFrame(rows)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def waqi_feed_uid(token: str, uid: int) -> dict:
+    js = _get(f"{WAQI_URL}/feed/@{uid}/", {"token": token})
+    if js.get("status") != "ok":
+        raise RuntimeError(js.get("data", "WAQI error"))
+    return js["data"]
+
+
 def station_reading(lat, lon):
-    """Live reading from the nearest WAQI station, or None."""
+    """Live reading from the closest reporting WAQI station within MAX_STATION_KM, or None."""
     token = waqi_token()
     if not token:
         return None
+    from browser_js import haversine_km
     from station import parse_feed
     try:
-        return parse_feed(waqi_feed(token, lat, lon), lat, lon)
+        near = waqi_nearby(token, round(lat, 3), round(lon, 3))
+        if near.empty:
+            return None
+        near["km"] = [haversine_km(lat, lon, a, b) for a, b in zip(near["lat"], near["lon"])]
+        best = near.sort_values("km").iloc[0]
+        if best["km"] > MAX_STATION_KM:
+            return None
+        reading = parse_feed(waqi_feed_uid(token, int(best["uid"])), lat, lon)
+        return reading if reading and reading["distance_km"] <= MAX_STATION_KM else None
     except Exception:
         return None
 

@@ -29,8 +29,15 @@ def station(lat, lon):
     if not tok:
         return None
     try:
-        js = requests.get(f"https://api.waqi.info/feed/geo:{lat};{lon}/", params={"token": tok}, timeout=20).json()
-        return parse_feed(js["data"], lat, lon) if js.get("status") == "ok" else None
+        from browser_js import haversine_km
+        near = data.waqi_nearby(tok, round(lat, 3), round(lon, 3))
+        if near.empty:
+            return None
+        near["km"] = [haversine_km(lat, lon, a, b) for a, b in zip(near["lat"], near["lon"])]
+        best = near.sort_values("km").iloc[0]
+        if best["km"] > data.MAX_STATION_KM:
+            return None
+        return parse_feed(data.waqi_feed_uid(tok, int(best["uid"])), lat, lon)
     except Exception:
         return None
 
