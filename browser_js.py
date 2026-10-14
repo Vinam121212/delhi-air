@@ -4,7 +4,7 @@ import math
 import re
 import time
 
-from locations import DELHI_CENTER, LOCATIONS
+from locations import CITIES, LOCATIONS
 
 
 def _safe(js: str) -> str:
@@ -21,9 +21,10 @@ def haversine_km(lat1, lon1, lat2, lon2):
 
 
 def nearest_locality(lat, lon):
+    """(nearest locality, km to it, km to that city's centre)."""
     name = min(LOCATIONS, key=lambda n: haversine_km(lat, lon, LOCATIONS[n]["lat"], LOCATIONS[n]["lon"]))
-    return name, haversine_km(lat, lon, LOCATIONS[name]["lat"], LOCATIONS[name]["lon"]), \
-        haversine_km(lat, lon, DELHI_CENTER["lat"], DELHI_CENTER["lon"])
+    c = CITIES[LOCATIONS[name]["city"]]["center"]
+    return name, haversine_km(lat, lon, LOCATIONS[name]["lat"], LOCATIONS[name]["lon"]), haversine_km(lat, lon, c["lat"], c["lon"])
 
 
 def geolocate_html() -> str:

@@ -49,7 +49,8 @@ def _dir_name(deg):
     return names[int(((deg % 360) + 22.5) // 45) % 8]
 
 
-def analyse(hourly: pd.DataFrame, now: pd.Timestamp, weather: dict, fires: pd.DataFrame | None):
+def analyse(hourly: pd.DataFrame, now: pd.Timestamp, weather: dict, fires: pd.DataFrame | None,
+            city: str = "Delhi NCR", north: bool = True):
     """Return (factors, facts). factors: list of dicts {icon, title, score 0-1, text, evidence}."""
     past = hourly[hourly.index <= now]
     cur = past.iloc[-1]
@@ -76,14 +77,16 @@ def analyse(hourly: pd.DataFrame, now: pd.Timestamp, weather: dict, fires: pd.Da
     n_pb = 0 if fires is None else len(_in(fires, PUNJAB_BOX))
     n_hr = 0 if fires is None else len(_in(fires, HARYANA_BOX))
     from_nw = not np.isnan(wdir) and (wdir >= 270 or wdir <= 20)
-    s = min(1.0, n_fire / 1500) * (1.0 if from_nw else 0.45)
+    s = min(1.0, n_fire / 1500) * (1.0 if from_nw else 0.45) if north else 0.0
     factors.append({
         "icon": "🔥", "title": "Crop-residue (stubble) burning", "score": s,
         "text": (f"Satellites detected <b>{n_fire:,}</b> active fires in the Punjab–Haryana belt in the last 24 h "
                  f"(≈{n_pb:,} in Punjab, ≈{n_hr:,} in Haryana). "
-                 + ("Winds are blowing <b>from the north-west</b>, carrying that smoke toward Delhi." if from_nw else
-                    "Winds aren't coming from the north-west right now, so less of that smoke is reaching Delhi."))
-        if fires is not None else "Fire data from NASA is unavailable right now.",
+                 + (f"Winds are blowing <b>from the north-west</b>, carrying that smoke toward {city}." if from_nw else
+                    f"Winds aren't coming from the north-west right now, so less of that smoke is reaching {city}."))
+        if fires is not None and north else
+        (f"Crop-fire smoke from Punjab and Haryana mainly hits north Indian cities in Oct–Nov — it isn't a factor for {city}."
+         if not north else "Fire data from NASA is unavailable right now."),
         "evidence": f"{n_fire:,} fires · wind from {_dir_name(wdir) if not np.isnan(wdir) else '—'}"})
 
     # 2. stagnant air / inversion
@@ -147,11 +150,13 @@ def analyse(hourly: pd.DataFrame, now: pd.Timestamp, weather: dict, fires: pd.Da
 
     factors.sort(key=lambda f: -f["score"])
     month = now.month
-    season = ("Winter (Oct–Jan): cold, still nights trap pollution and stubble smoke arrives — Delhi's worst season."
+    season = (("Winter (Oct–Jan): cold, still nights trap pollution and stubble smoke arrives — north India's worst season."
+               if north else "Winter (Oct–Jan): calmer winds let pollution build up, though sea breezes and milder nights "
+                             "keep levels well below north India's.")
               if month in (10, 11, 12, 1) else
               "Pre-monsoon (Apr–Jun): hot, windy and dusty; ozone and dust dominate."
               if month in (4, 5, 6) else
-              "Monsoon (Jul–Sep): rain washes particles out — usually Delhi's cleanest air."
+              f"Monsoon (Jul–Sep): rain washes particles out — usually {city}'s cleanest air."
               if month in (7, 8, 9) else "Late winter / spring: conditions are improving as nights warm up.")
     facts = {"fires": n_fire, "wind": wind, "wdir": wdir, "blh": blh, "rh": rh, "season": season}
     return factors, facts

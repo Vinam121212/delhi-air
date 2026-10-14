@@ -44,3 +44,49 @@ def parse_feed(feed: dict, lat: float, lon: float) -> dict | None:
         "pm2_5": pm25, "pm10": pm10, "dominant": feed.get("dominentpol"),
         "raw": {k: get(k) for k in ("pm25", "pm10", "no2", "o3", "so2", "co")},
     }
+
+
+def us_index(pol, conc):
+    """US-EPA sub-index for a PM concentration (µg/m³)."""
+    if conc is None or pd.isna(conc):
+        return None
+    for c_lo, c_hi, i_lo, i_hi in US_BP[pol]:
+        if conc <= c_hi:
+            return i_lo + (i_hi - i_lo) * (max(conc, c_lo) - c_lo) / (c_hi - c_lo)
+    return 500
+
+
+def calibrate(hourly: pd.DataFrame, stn: dict | None, now: pd.Timestamp, tau_h: float = 18.0):
+    """Scale the model's PM2.5/PM10 so 'now' matches the live station, fading the correction out over ~a day
+    in both directions, then recompute both AQIs. Returns (frame, info) — info is None if nothing changed."""
+    import numpy as np
+    from aqi import add_cpcb_aqi
+    if not stn:
+        return hourly, None
+    cur = hourly[hourly.index <= now].iloc[-1]
+    ratios = {}
+    for col in ("pm2_5", "pm10"):
+        s_val, m_val = stn.get(col), cur.get(col)
+        if s_val and m_val and m_val > 0:
+            ratios[col] = float(min(3.0, max(0.33, s_val / m_val)))
+    if not ratios:
+        return hourly, None
+    df = hourly.copy()
+    hrs = np.asarray((df.index - now) / pd.Timedelta(hours=1), dtype=float)
+    weight = np.exp(-np.abs(hrs) / tau_h)
+    for col, r in ratios.items():
+        df[col] = df[col] * (1 + (r - 1) * weight)
+    # India: recompute sub-indices from the corrected concentrations
+    df = add_cpcb_aqi(df.drop(columns=[c for c in df.columns if c.startswith("si_")] + ["in_aqi", "dominant"], errors="ignore"))
+
+    # US: shift the model's AQI by however much the correction moves the PM index (24 h means), unless a gas drove it
+    def us_pm(frame):
+        p25 = frame["pm2_5"].rolling(24, min_periods=8).mean().map(lambda c: us_index("pm25", c))
+        p10 = frame["pm10"].rolling(24, min_periods=8).mean().map(lambda c: us_index("pm10", c))
+        return pd.concat([p25, p10], axis=1).max(axis=1)
+    delta = (us_pm(df) - us_pm(hourly)).fillna(0)
+    pm_driven = True
+    if "us_aqi_pm2_5" in df and "us_aqi_pm10" in df:
+        pm_driven = df["us_aqi"] <= df[["us_aqi_pm2_5", "us_aqi_pm10"]].max(axis=1) + 1
+    df["us_aqi"] = (df["us_aqi"] + delta.where(pm_driven, 0)).clip(lower=0).round()
+    return df, {"ratios": ratios, "station": stn["name"]}

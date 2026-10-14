@@ -6,14 +6,18 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+import json
+from urllib.parse import quote
 
 import data
 from aqi import (CATEGORY_DESC, GRAP_STAGES, HEALTH, PERSONA_TIPS, POLLUTANTS, categories, category,
                  cigarettes_per_day, sub_index)
-from locations import DELHI_CENTER, LOCATIONS
+from locations import CITIES, DEFAULT_CITY, LOCATIONS, city_locations
 from browser_js import alerts_html, geolocate_html, nearest_locality
 from causes import analyse, fetch_fires
 from details import DetailBuilder
+from sharecard import make_card
+from station import calibrate
 import health_log as hl
 from planner import ACTIVITIES, dose_ug, find_slots, verdict
 from i18n import set_lang, t
@@ -22,7 +26,7 @@ from intro import INTRO_CSS, intro_html
 from sky import sky_html
 from ui import CSS, compact, hex_to_rgba, scale_html, style_fig
 
-st.set_page_config(page_title="AQIfyMe · Delhi air quality", page_icon="🌤️", layout="wide",
+st.set_page_config(page_title="AQIfyMe · Live air quality", page_icon="🌤️", layout="wide",
                    initial_sidebar_state="expanded")
 st.markdown(CSS, unsafe_allow_html=True)
 st.markdown(EXPAND_CSS, unsafe_allow_html=True)
@@ -53,21 +57,28 @@ with st.sidebar:
                 f"<div class='brand-sub'>{t('Live air-quality intelligence')}</div></div></div>", unsafe_allow_html=True)
 
     st.markdown(f"#### {t('Location')}")
-    # ?near=lat,lon (set by the "Use my location" button) picks the closest locality
+    # ?near=lat,lon (set by the "Use my location" button) or ?loc=Name (shared links) pick the locality
     near_note, near_loc = None, None
     if "near" in st.query_params:
         try:
             _lat, _lon = (float(x) for x in st.query_params["near"].split(","))
-            near_loc, d_loc, d_delhi = nearest_locality(_lat, _lon)
-            near_note = (f"📍 You're {d_loc:.1f} km from {near_loc}." if d_delhi < 60 else
-                         f"📍 You're {d_delhi:,.0f} km from Delhi — showing the nearest tracked locality, {near_loc}.")
+            near_loc, d_loc, d_city = nearest_locality(_lat, _lon)
+            _c = LOCATIONS[near_loc]["city"]
+            near_note = (f"📍 You're {d_loc:.1f} km from {near_loc}, {_c}." if d_city < 60 else
+                         f"📍 You're {d_city:,.0f} km from {_c}, the closest city we track — showing {near_loc}.")
         except ValueError:
             pass
-    zones = ["All zones"] + sorted({v["zone"] for v in LOCATIONS.values()})
-    zone = st.selectbox(t("Zone"), zones, label_visibility="collapsed", format_func=t)
-    loc_options = [n for n, v in LOCATIONS.items() if zone == "All zones" or v["zone"] == zone]
-    pref = near_loc if near_loc in loc_options else "ITO"
-    location = st.selectbox(t("Locality"), loc_options, index=loc_options.index(pref) if pref in loc_options else 0)
+    elif st.query_params.get("loc") in LOCATIONS:
+        near_loc = st.query_params["loc"]
+    cities = list(CITIES)
+    city_default = LOCATIONS[near_loc]["city"] if near_loc else DEFAULT_CITY
+    city = st.selectbox(t("City"), cities, index=cities.index(city_default), key=f"city_{city_default}")
+    c_locs = city_locations(city)
+    zones = ["All zones"] + sorted({v["zone"] for v in c_locs.values()})
+    zone = st.selectbox(t("Zone"), zones, label_visibility="collapsed", format_func=t, key=f"zone_{city}")
+    loc_options = [n for n, v in c_locs.items() if zone == "All zones" or v["zone"] == zone]
+    pref = near_loc if near_loc in loc_options else ("ITO" if "ITO" in loc_options else loc_options[0])
+    location = st.selectbox(t("Locality"), loc_options, index=loc_options.index(pref), key=f"loc_{city}_{zone}_{pref}")
     if st.button(f"📍 {t('Use my location')}", width="stretch"):
         st.session_state["geo_request"] = True
     if st.session_state.pop("geo_request", False):
@@ -98,6 +109,8 @@ with st.sidebar:
     every = st.select_slider(t("Refresh every"), options=[1, 2, 5, 10, 15, 30], value=5,
                              format_func=lambda m: f"{m} {t('min')}", disabled=not auto)
     motion = st.toggle(t("Animated sky"), value=True, help="Turn off to save battery on slower devices.")
+    calibrate_on = st.toggle(t("Correct forecasts with live stations"), value=True, disabled=not data.waqi_token(),
+                             help="Uses the nearest station's reading to fix the model's bias, fading out over the next day.")
     if st.button(t("⟳  Refresh now"), width="stretch"):
         st.cache_data.clear()
         st.rerun()
@@ -118,6 +131,13 @@ with st.sidebar:
 AQI_COL = "in_aqi" if standard == "India (CPCB)" else "us_aqi"
 CATS = categories(standard)
 LOC = LOCATIONS[location]
+CITY_CFG = CITIES[city]
+
+
+def place(loc_name):
+    """'Central Delhi' for NCR localities, 'West, Pune' elsewhere."""
+    v = LOCATIONS[loc_name]
+    return v["zone"] if v["city"] == "Delhi NCR" else f"{v['zone']}, {v['city']}"
 
 
 def aqi_colour(v):
@@ -167,6 +187,37 @@ def pollutant_card(key, value, si, delay):
     </div>""")
 
 
+PUBLIC_URL = "https://aqifyme.streamlit.app"
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _card_png(**kw):
+    return make_card(**kw)
+
+
+def render_share(location, aqi_now, cat_name, cat_col, cur, past, stn, in_level):
+    """📤 Share: an Instagram/WhatsApp-ready image plus a deep link to this locality."""
+    link = f"{PUBLIC_URL}/?loc={quote(location)}"
+    dom = cur.get("dominant")
+    h = HEALTH[max(in_level, 0)]
+    cig = cigarettes_per_day(past["pm2_5"].tail(24).mean()) or 0
+    text = (f"Air quality at {location} right now: AQI {aqi_now:.0f} ({cat_name}). "
+            f"Breathing it for a day ≈ {cig:.1f} cigarettes. Check yours on AQIfyMe: {link}")
+    _, mid, _ = st.columns([1, 1, 1])
+    with mid.popover(f"📤 {t('Share')}", width="stretch"):
+        png = _card_png(location=location, place=place(location), aqi=float(aqi_now), standard=standard, category=cat_name,
+                        colour=cat_col, pm25=float(cur["pm2_5"]), cigarettes=float(cig),
+                        main_pollutant=LABEL.get(dom, "—") if isinstance(dom, str) else "—",
+                        time_str=f"{now_ist():%d %b · %-I:%M %p}", url=PUBLIC_URL.replace("https://", ""),
+                        station=stn["name"] if stn else None, advice=f"{h['outdoor']} · Mask: {h['mask']}")
+        st.image(png, width="stretch")
+        st.download_button("⬇️ Save image", png, file_name=f"aqifyme-{location.replace(' ', '-').lower()}.png",
+                           mime="image/png", width="stretch")
+        st.link_button("💬 Share on WhatsApp", f"https://wa.me/?text={quote(text)}", width="stretch")
+        st.code(link, language=None)
+        st.caption("Tip: save the image and post it to your Instagram or WhatsApp status.")
+
+
 def outlook_sentence(past, future, aqi_now, cat_name):
     nxt = future.head(12)[AQI_COL].dropna()
     if nxt.empty:
@@ -194,6 +245,10 @@ def render_live():
     except Exception:
         weather = {}
     w = weather.get("current", {})
+    stn = data.station_reading(LOC["lat"], LOC["lon"])
+    calib = None
+    if stn and calibrate_on:
+        hourly, calib = calibrate(hourly, stn, now_ist().floor("h"))
 
     now = now_ist().floor("h")
     past = hourly[hourly.index <= now]
@@ -205,7 +260,6 @@ def render_live():
     sky_for(in_level)
 
     # ── hero (iOS Weather style) ─────────────────────────────────────────────
-    stn = data.station_reading(LOC["lat"], LOC["lon"])
     station_line = ""
     if stn:
         s_val = stn["in_aqi"] if standard == "India (CPCB)" and stn["in_aqi"] is not None else stn["us_aqi"]
@@ -217,13 +271,17 @@ def render_live():
                         f'<b style="color:{s_col}">{s_val:.0f}</b> {t(s_name)}'
                         f'{pm_txt}'
                         f' <span style="opacity:.7">· {stn["time"][11:16]}</span></div>')
+        if calib:
+            r = calib["ratios"].get("pm2_5") or calib["ratios"].get("pm10")
+            station_line += (f'<div style="font-size:.72rem;color:var(--muted);margin-top:.35rem">✓ {t("Forecast corrected with this station")}'
+                             f' (model {"under" if r > 1 else "over"}-estimated PM by {abs(r - 1):.0%})</div>')
     today = hourly[hourly.index.date == now.date()][AQI_COL]
     temp = w.get("temperature_2m")
     pill = (f'<span class="live-pill"><span class="live-dot"></span>{t("LIVE · updates every")} {every} {t("min")}</span>' if auto
             else f'<span class="live-pill paused"><span class="live-dot"></span>{t("AUTO-REFRESH PAUSED")}</span>')
     show(f"""
     <div class="hero fade xp" data-detail="aqi" style="position:relative;border-radius:32px;overflow:hidden" title="Tap for details">
-      <div class="hero-zone">📍 {LOC['zone']} Delhi{f' · {temp:.0f}°C' if temp is not None else ''}</div>
+      <div class="hero-zone">📍 {place(location)}{f' · {temp:.0f}°C' if temp is not None else ''}</div>
       <div class="hero-loc">{location}</div>
       <div class="hero-aqi" style="--num:{int(round(aqi_now))}"></div>
       <div class="hero-cat"><span class="hero-dot" style="background:{cat_col}"></span>{t(cat_name)}</div>
@@ -232,6 +290,8 @@ def render_live():
       {pill}
       <div style="font-size:.72rem;color:var(--muted);margin-top:.45rem">{t('Reading for')} {past.index[-1]:%d %b, %-I:%M %p} IST · {t('checked')} {now_ist():%-I:%M:%S %p} · {t('Tap any box for details')}</div>
     </div>""")
+
+    render_share(location, aqi_now, cat_name, cat_col, cur, past, stn, in_level)
 
     # ── hourly strip ─────────────────────────────────────────────────────────
     strip = pd.concat([past.tail(1), future.head(24)])
@@ -317,11 +377,11 @@ def render_live():
 
     # ── expanded views for every box above ────────────────────────────────────
     try:
-        all_current = data.fetch_all_current()
+        all_current = data.fetch_all_current(city)
     except Exception:
         all_current = None
     db = DetailBuilder(hourly=hourly, now=now, location=location, zone=LOC["zone"], standard=standard, aqi_col=AQI_COL,
-                       weather=weather, all_current=all_current, label=LABEL)
+                       weather=weather, all_current=all_current, label=LABEL, city=city)
     builders = {"aqi": db.aqi, "hourly": db.hourly, "daily": db.daily, "scale": db.scale, "main": db.main_pollutant,
                 "cig": db.cigarettes, "change": db.change, "wind": db.wind, "humidity": db.humidity, "visibility": db.visibility,
                 **{k: (lambda k=k: db.pollutant(k)) for k in ALL_POLLUTANTS}}
@@ -469,7 +529,7 @@ def render_map(token):
     stations = None
     if token:
         try:
-            stations = data.waqi_stations(token)
+            stations = data.waqi_stations(token, city)
         except Exception as e:
             st.warning(f"Couldn't load WAQI stations ({e}); showing model data instead.")
     if stations is not None and not stations.empty:
@@ -478,11 +538,11 @@ def render_map(token):
         df["category"] = [category(v, "US (EPA)")[0] for v in df["aqi"]]
         value_col, title = "aqi", "Live CPCB/DPCC ground stations (US-scale AQI)"
     else:
-        df = data.fetch_all_current().rename(columns={"location": "name"})
+        df = data.fetch_all_current(city).rename(columns={"location": "name"})
         value_col = AQI_COL if focus == "AQI" else focus
         df["colour"] = [aqi_colour(v) for v in df[AQI_COL]]
         df["category"] = [category(v, standard)[0] for v in df[AQI_COL]]
-        title = f"{'AQI' if focus == 'AQI' else LABEL[focus]} across Delhi localities"
+        title = f"{'AQI' if focus == 'AQI' else LABEL[focus]} across {city} localities"
     vals = df[value_col].astype(float)
     size = 14 + 26 * (vals - vals.min()) / ((vals.max() - vals.min()) or 1)
     fig = go.Figure(go.Scattermap(
@@ -494,7 +554,7 @@ def render_map(token):
     sel = LOCATIONS[location]
     fig.add_trace(go.Scattermap(lat=[sel["lat"]], lon=[sel["lon"]], mode="markers", hoverinfo="skip",
                                 marker=dict(size=46, color="rgba(56,189,248,0.25)")))
-    fig.update_layout(map=dict(style="carto-darkmatter", center=DELHI_CENTER, zoom=9.6), title=title)
+    fig.update_layout(map=dict(style="carto-darkmatter", center=CITY_CFG["center"], zoom=CITY_CFG["zoom"]), title=title)
     st.plotly_chart(style_fig(fig, height=560, legend=False), width="stretch", config={"scrollZoom": True, **CHART_CFG})
     if stations is None:
         st.caption("ℹ️ Map uses CAMS atmospheric-model data (~10–40 km grid), so neighbouring localities can share values. "
@@ -504,7 +564,7 @@ def render_map(token):
 # ── tab: compare ──────────────────────────────────────────────────────────────
 def render_station_ranking(token):
     try:
-        stations = data.waqi_stations(token)
+        stations = data.waqi_stations(token, city)
     except Exception as e:
         st.warning(f"Live stations unavailable: {e}")
         return
@@ -524,7 +584,7 @@ def render_compare():
     if token:
         render_station_ranking(token)
         st.caption("Below: the model estimate for each tracked locality, which also drives the forecasts.")
-    df = data.fetch_all_current()
+    df = data.fetch_all_current(city)
     metric = AQI_COL if focus == "AQI" else focus
     unit = "AQI" if focus == "AQI" else POLLUTANTS[focus]["unit"]
     df = df.sort_values(metric, ascending=True)
@@ -643,12 +703,13 @@ def render_planner(future, now):
 # ── tab: why ──────────────────────────────────────────────────────────────────
 def render_causes(hourly, now, weather):
     st.markdown(f"##### 🔎 {t('Why is the air like this?')}")
-    try:
-        fires = fetch_fires()
-    except Exception as e:
-        fires = None
-        st.caption(f"Fire data unavailable: {e}")
-    factors, facts = analyse(hourly, now, weather, fires)
+    fires = None
+    if CITY_CFG["north"]:
+        try:
+            fires = fetch_fires()
+        except Exception as e:
+            st.caption(f"Fire data unavailable: {e}")
+    factors, facts = analyse(hourly, now, weather, fires, city=city, north=CITY_CFG["north"])
     top = [f for f in factors if f["score"] >= .25] or factors[:1]
     st.markdown(compact(f"""<div class="card" style="margin-bottom:1rem"><div class="summary">
       Main drivers right now: <b>{', '.join(f['title'].lower() for f in top[:3])}</b>.<br>
@@ -669,18 +730,18 @@ def render_causes(hourly, now, weather):
         fig = go.Figure(go.Scattermap(lat=fires["latitude"], lon=fires["longitude"], mode="markers",
                                       marker=dict(size=(4 + fires["frp"].clip(0, 60) / 6).tolist(), color="#ff5a1f", opacity=.75),
                                       hovertemplate="Fire · %{lat:.2f}, %{lon:.2f}<extra></extra>", name="Fires"))
-        fig.add_trace(go.Scattermap(lat=[DELHI_CENTER["lat"]], lon=[DELHI_CENTER["lon"]], mode="markers+text", text=["Delhi"],
+        fig.add_trace(go.Scattermap(lat=[CITY_CFG["center"]["lat"]], lon=[CITY_CFG["center"]["lon"]], mode="markers+text", text=[city],
                                     textposition="bottom center", textfont=dict(color="#fff", size=13),
                                     marker=dict(size=18, color="#7dd3fc"), hoverinfo="skip"))
         wd = facts["wdir"]
         if wd == wd:  # not NaN: arrow showing where the wind blows FROM toward Delhi
             import math as _m
             rad = _m.radians(wd)
-            src = (DELHI_CENTER["lat"] + 1.6 * _m.cos(rad), DELHI_CENTER["lon"] + 1.6 * _m.sin(rad) / _m.cos(_m.radians(28.6)))
-            fig.add_trace(go.Scattermap(lat=[src[0], DELHI_CENTER["lat"]], lon=[src[1], DELHI_CENTER["lon"]], mode="lines",
+            src = (CITY_CFG["center"]["lat"] + 1.6 * _m.cos(rad), CITY_CFG["center"]["lon"] + 1.6 * _m.sin(rad) / _m.cos(_m.radians(CITY_CFG['center']['lat'])))
+            fig.add_trace(go.Scattermap(lat=[src[0], CITY_CFG["center"]["lat"]], lon=[src[1], CITY_CFG["center"]["lon"]], mode="lines",
                                         line=dict(width=4, color="rgba(255,255,255,.8)"), hoverinfo="skip"))
         fig.update_layout(map=dict(style="carto-darkmatter", center={"lat": 29.9, "lon": 76.2}, zoom=5.6),
-                          title=f"🔥 {len(fires):,} fire hotspots in the last 24 h (NASA VIIRS) · white line = wind toward Delhi")
+                          title=f"🔥 {len(fires):,} fire hotspots in the last 24 h (NASA VIIRS) · white line = wind toward {city}")
         st.plotly_chart(style_fig(fig, height=480, legend=False), width="stretch", config={"scrollZoom": True, **CHART_CFG})
 
 
@@ -694,8 +755,10 @@ def render_compare_places():
     st.write("")
     names = list(LOCATIONS)
     c1, c2 = st.columns(2)
-    a = c1.selectbox(t("Place A"), names, index=names.index(location), key="cmp_a")
-    b = c2.selectbox(t("Place B"), names, index=names.index("Dwarka Sector 8") if location != "Dwarka Sector 8" else 0, key="cmp_b")
+    a = c1.selectbox(t("Place A"), names, index=names.index(location), key="cmp_a", format_func=lambda n: f"{n} · {LOCATIONS[n]['city']}")
+    same_city = [n for n in city_locations(city) if n != location]
+    b = c2.selectbox(t("Place B"), names, index=names.index(same_city[min(9, len(same_city) - 1)] if same_city else names[0]),
+                     key="cmp_b", format_func=lambda n: f"{n} · {LOCATIONS[n]['city']}")
     now = now_ist().floor("h")
     frames = {}
     for n in (a, b):
@@ -713,7 +776,7 @@ def render_compare_places():
         name, c, emo, _ = category(row[AQI_COL], standard)
         nxt = df[df.index > now].head(24)[AQI_COL]
         col.markdown(compact(f"""<div class="card" style="text-align:center;box-shadow:inset 0 3px 0 {accent}">
-          <div class="hero-zone">📍 {LOCATIONS[n]['zone']} Delhi</div><div class="hero-loc" style="font-size:1.6rem">{n}</div>
+          <div class="hero-zone">📍 {place(n)}</div><div class="hero-loc" style="font-size:1.6rem">{n}</div>
           <div style="font-size:4.5rem;font-weight:200;line-height:1.05;color:{c}">{row[AQI_COL]:.0f}</div>
           <div class="hero-cat" style="font-size:1.1rem">{emo} {t(name)}</div>
           <div class="muted" style="margin-top:.4rem;font-size:.85rem">Next 24 h: {nxt.min():.0f} – {nxt.max():.0f} · PM2.5 {row['pm2_5']:.0f} µg/m³</div>
@@ -761,13 +824,45 @@ def _ring(score, colour):
             f'<text x="85" y="95" text-anchor="middle" font-size="44" font-weight="300" fill="#fff">{score}</text></svg>')
 
 
+def exposure_db():
+    """This visitor's log: kept in session state, persisted to their browser cookies."""
+    if "exp_db" not in st.session_state:
+        try:
+            cookies = dict(st.context.cookies)
+        except Exception:
+            cookies = {}
+        db = hl.decode(cookies)
+        if db is None and data.is_local():
+            db = hl.load_file()          # migrate a log saved by an older local version
+        st.session_state["exp_db"] = db or hl.empty()
+    return st.session_state["exp_db"]
+
+
+def exposure_save(db):
+    st.session_state["exp_db"] = db
+    st.session_state["exp_dirty"] = True
+    if data.is_local():
+        hl.save_file(db)
+
+
+def exposure_cookie_js(db):
+    chunks = hl.encode(db)
+    return ("<script>(function(){const c=" + json.dumps(chunks) + ";const sec=location.protocol==='https:'?';Secure':'';"
+            "const set=(k,v,age)=>document.cookie=k+'='+v+';path=/;max-age='+age+';SameSite=Lax'+sec;"
+            "c.forEach((v,i)=>set('" + hl.COOKIE + "'+i,v,31536000));"
+            "for(let i=c.length;40>i;i++){if(document.cookie.includes('" + hl.COOKIE + "'+i+'='))set('" + hl.COOKIE + "'+i,'',0);}"
+            "})();</script>")
+
+
 def render_exposure():
     st.markdown(f"<h2 class='hero-title' style='font-size:1.8rem'>🫁 {t('Your daily clean-air score')}</h2>"
                 "<div class='hero-sub'>Log the time you spend outdoors — the app works out how much polluted air you breathed.</div>",
                 unsafe_allow_html=True)
     st.markdown("<style>@keyframes ringdraw { from { stroke-dasharray: 0 999; } }</style>", unsafe_allow_html=True)
     st.write("")
-    db = hl.load()
+    db = exposure_db()
+    if st.session_state.pop("exp_dirty", False):
+        st.html(exposure_cookie_js(db), unsafe_allow_javascript=True)
     today = now_ist().date()   # Delhi's date, not this computer's
     s_today = hl.day_summary(db, today.isoformat())
     cur_streak, best_streak = hl.streaks(db, today)
@@ -807,6 +902,7 @@ def render_exposure():
                     win = win if not win.empty else day_df
                     hl.add_entry(db, day=d, start=start.strftime("%H:%M"), minutes=mins, location=loc, activity=act,
                                  pm25=win["pm2_5"].mean(), aqi=win["in_aqi"].mean(), day_pm25=day_df["pm2_5"].mean())
+                    exposure_save(db)
                     st.toast(f"Logged {mins} min at {loc} ✅")
                     st.rerun()
                 except Exception as e:
@@ -814,7 +910,7 @@ def render_exposure():
     pur = st.toggle("I run an air purifier at home (lowers indoor exposure)", value=db.get("purifier", False))
     if pur != db.get("purifier", False):
         db["purifier"] = pur
-        hl.save(db)
+        exposure_save(db)
         st.rerun()
 
     days = [today - timedelta(days=i) for i in range(13, -1, -1)]
@@ -839,10 +935,95 @@ def render_exposure():
               <span class="muted">PM2.5 {e['pm25']:.0f}</span></div>"""), unsafe_allow_html=True)
             if c2.button("🗑️", key=f"del_{e['id']}", help="Delete this entry"):
                 hl.delete_entry(db, e["id"])
+                exposure_save(db)
                 st.rerun()
     st.caption("How the score works: outdoor time uses the forecast/archived PM2.5 at that place and hour; indoor air is assumed "
                "at 65% of outdoor (30% with a purifier). 100 = clean air all day, 60+ keeps your streak going. "
-               "Entries are saved on this computer in my_exposure.json.")
+               "🔒 Your log is private: it's stored only in this browser (as cookies), not on the server — "
+               "other visitors can't see it, and it stays here until you clear your browser data.")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Weekly report
+# ══════════════════════════════════════════════════════════════════════════════
+def render_weekly():
+    today = now_ist().date()
+    this_start, this_end = today - timedelta(days=7), today - timedelta(days=1)
+    last_start = today - timedelta(days=14)
+    st.markdown(f"<h2 class='hero-title' style='font-size:1.8rem'>📊 {t('Weekly report')}</h2>"
+                f"<div class='hero-sub'>{this_start:%a %d %b} – {this_end:%a %d %b} vs the week before · {location}, {city}</div>",
+                unsafe_allow_html=True)
+    st.write("")
+    with st.spinner("Crunching two weeks of data…"):
+        try:
+            frames = data.fetch_history_city(city, last_start, this_end)
+        except Exception as e:
+            st.error(f"Couldn't load the archive: {e}")
+            return
+    df = frames[location]
+    daily = df.resample("D").agg({AQI_COL: "mean", "pm2_5": "mean"})
+    wk = daily[daily.index.date >= this_start]
+    prev = daily[daily.index.date < this_start]
+    a_now, a_prev = wk[AQI_COL].mean(), prev[AQI_COL].mean()
+    change = (a_now - a_prev) / a_prev if a_prev else 0
+    poor_lvl = 3 if standard == "India (CPCB)" else 3
+    bad_days = int(sum(category(v, standard)[3] >= poor_lvl for v in wk[AQI_COL]))
+    best_d, worst_d = wk[AQI_COL].idxmin(), wk[AQI_COL].idxmax()
+    hours = df[df.index.date >= this_start]
+    prof = hours.groupby(hours.index.hour)["pm2_5"].mean()       # hourly PM2.5 shows the daily rhythm (AQI is a 24 h mean)
+    name, col, emo, _ = category(a_now, standard)
+    verdict_txt = (f"Air at <b>{location}</b> was <b>{abs(change):.0%} {'worse' if change > 0 else 'better'}</b> than the week before "
+                   f"(average AQI {a_now:.0f} vs {a_prev:.0f}). <b>{bad_days} of 7</b> days were {t('Poor')} or worse. "
+                   f"PM2.5 averaged <b>{wk['pm2_5'].mean():.0f} µg/m³</b> — {wk['pm2_5'].mean() / 15:.1f}× the WHO guideline. "
+                   f"Air was usually cleanest around <b>{pd.Timestamp(2000, 1, 1, int(prof.idxmin())):%-I %p}</b> and worst around "
+                   f"<b>{pd.Timestamp(2000, 1, 1, int(prof.idxmax())):%-I %p}</b>.")
+    st.markdown(compact(f'<div class="card" style="margin-bottom:1rem"><div class="summary">{emo} {verdict_txt}</div></div>'),
+                unsafe_allow_html=True)
+    tiles = [("Average AQI", f"{a_now:.0f}", f"{'▲' if change > 0 else '▼'} {abs(change):.0%} vs last week", col),
+             ("Cleanest day", f"{best_d:%a %d}", f"AQI {wk[AQI_COL].min():.0f}", "#4ade80"),
+             ("Worst day", f"{worst_d:%a %d}", f"AQI {wk[AQI_COL].max():.0f}", "#f87171"),
+             (f"Days {t('Poor')}+", f"{bad_days}/7", "days", None),
+             ("PM2.5 average", f"{wk['pm2_5'].mean():.0f}", f"µg/m³ · {wk['pm2_5'].mean() / 15:.1f}× WHO", None),
+             ("Cigarette equivalent", f"{wk['pm2_5'].mean() / 22 * 7:.0f}", "cigarettes this week", "#fca5a5")]
+    st.markdown(compact('<div class="tiles" style="grid-template-columns:repeat(auto-fit,minmax(160px,1fr))">' + "".join(
+        f'<div class="card tile" style="min-height:120px;animation-delay:{.05 * i:.2f}s"><div class="card-label">{k}</div>'
+        f'<div class="big"{f" style=color:{c}" if c else ""}>{v}</div><div class="note">{n}</div></div>'
+        for i, (k, v, n, c) in enumerate(tiles)) + "</div>"), unsafe_allow_html=True)
+    st.write("")
+    c1, c2 = st.columns([1.3, 1], gap="medium")
+    with c1:
+        fig = go.Figure()
+        fig.add_trace(go.Bar(x=[d.strftime("%a") for d in prev.index], y=prev[AQI_COL], name="Week before",
+                             marker_color="rgba(255,255,255,.35)", marker_line_width=0))
+        fig.add_trace(go.Bar(x=[d.strftime("%a") for d in wk.index], y=wk[AQI_COL], name="This week",
+                             marker_color=[aqi_colour(v) for v in wk[AQI_COL]], marker_line_width=0,
+                             text=wk[AQI_COL].round(0), textposition="outside"))
+        fig.update_layout(title="Daily average AQI", barmode="group", bargap=.25, hovermode="x unified")
+        st.plotly_chart(style_fig(fig, height=340), width="stretch", config=CHART_CFG)
+    with c2:
+        p_prev = df[df.index.date < this_start].groupby(df[df.index.date < this_start].index.hour)["pm2_5"].mean()
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=list(range(24)), y=p_prev, name="Week before", line=dict(color="rgba(255,255,255,.5)", width=2, dash="dot")))
+        fig.add_trace(go.Scatter(x=list(range(24)), y=prof, name="This week", line=dict(color="#7dd3fc", width=3, shape="spline"),
+                                 fill="tozeroy", fillcolor="rgba(125,211,252,.12)"))
+        fig.update_layout(title="PM2.5 by hour of day (µg/m³)", xaxis=dict(tickvals=[0, 6, 12, 18, 23], ticktext=["12a", "6a", "12p", "6p", "11p"]))
+        st.plotly_chart(style_fig(fig, height=340), width="stretch", config=CHART_CFG)
+
+    rows = []
+    for loc, f in frames.items():
+        d = f.resample("D")[AQI_COL].mean()
+        cur_w, prev_w = d[d.index.date >= this_start].mean(), d[d.index.date < this_start].mean()
+        rows.append({"Locality": loc, "Zone": LOCATIONS[loc]["zone"], "This week": round(cur_w), "Week before": round(prev_w),
+                     "Change": f"{'▲' if cur_w > prev_w else '▼'} {abs(cur_w - prev_w) / prev_w:.0%}" if prev_w else "—",
+                     "Category": category(cur_w, standard)[0]})
+    rank = pd.DataFrame(rows).sort_values("This week", ascending=False).reset_index(drop=True)
+    rank.index += 1
+    pos = int(rank.index[rank["Locality"] == location][0])
+    st.markdown(f"##### 🏙️ {city} this week · {location} ranks **#{pos} most polluted of {len(rank)}**")
+    st.dataframe(rank, width="stretch",
+                 column_config={"This week": st.column_config.ProgressColumn("This week", min_value=0, max_value=500, format="%d")})
+    st.download_button("⬇️ Download this week's data (CSV)", df.to_csv().encode(), file_name=f"aqifyme-weekly-{location}.csv",
+                       mime="text/csv")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -984,14 +1165,14 @@ def render_history():
 # Learn
 # ══════════════════════════════════════════════════════════════════════════════
 def render_learn():
-    st.markdown(compact("""<div class="card" style="text-align:center;padding:1.8rem 1.4rem;margin-bottom:1.4rem">
+    st.markdown(compact(f"""<div class="card" style="text-align:center;padding:1.8rem 1.4rem;margin-bottom:1.4rem">
       <div class="brand-name" style="font-size:2.6rem;letter-spacing:-.03em"><span class="a">AQI</span><span class="f">fy</span><span class="m">Me</span></div>
       <div style="display:flex;justify-content:center;gap:.8rem;flex-wrap:wrap;margin:1rem 0">
         <span class="chip" style="font-size:.85rem;padding:.35rem .8rem"><b>AQI</b> · the air you breathe</span>
         <span class="chip" style="font-size:.85rem;padding:.35rem .8rem"><b>-fy</b> · as in veri<b>fy</b></span>
         <span class="chip" style="font-size:.85rem;padding:.35rem .8rem"><b>Me</b> · for you</span></div>
       <div class="summary">Verified air-quality information, made for you: live readings, forecasts, causes and
-      health advice for 25 Delhi localities, in one place. Tap the logo in the sidebar to replay the intro.</div></div>"""),
+      health advice for {len(LOCATIONS)} localities across {len(CITIES)} Indian cities, in one place. Tap the logo in the sidebar to replay the intro.</div></div>"""),
                 unsafe_allow_html=True)
     st.markdown("<h2 class='hero-title' style='font-size:1.8rem'>📚 Understand the air you breathe</h2>", unsafe_allow_html=True)
     st.write("")
@@ -1040,7 +1221,7 @@ def render_learn():
 # ══════════════════════════════════════════════════════════════════════════════
 # Page layout
 # ══════════════════════════════════════════════════════════════════════════════
-VIEWS = ["🌍 Live", "⚖️ Compare", "🫁 My exposure", "📅 History", "📚 Learn"]
+VIEWS = ["🌍 Live", "⚖️ Compare", "📊 Weekly", "🫁 My exposure", "📅 History", "📚 Learn"]
 view = st.segmented_control("View", VIEWS, default="🌍 Live", label_visibility="collapsed", key="view",
                             format_func=t) or "🌍 Live"
 
@@ -1052,7 +1233,7 @@ else:
         sky_for(category(_h[_h.index <= now_ist().floor("h")].iloc[-1]["in_aqi"], "India (CPCB)")[3])
     except Exception:
         sky_for(2)
-    {"⚖️ Compare": render_compare_places, "🫁 My exposure": render_exposure, "📅 History": render_history,
+    {"⚖️ Compare": render_compare_places, "📊 Weekly": render_weekly, "🫁 My exposure": render_exposure, "📅 History": render_history,
      "📚 Learn": render_learn}[view]()
 
 st.markdown("""<div class="footer">

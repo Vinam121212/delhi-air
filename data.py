@@ -7,7 +7,7 @@ import requests
 import streamlit as st
 
 from aqi import add_cpcb_aqi
-from locations import DELHI_BOUNDS, LOCATIONS
+from locations import CITIES, DEFAULT_CITY, LOCATIONS, city_locations
 
 AQ_URL = "https://air-quality-api.open-meteo.com/v1/air-quality"
 WX_URL = "https://api.open-meteo.com/v1/forecast"
@@ -17,12 +17,12 @@ HISTORY_START = date(2022, 8, 1)  # earliest date the Open-Meteo air-quality arc
 
 HOURLY_VARS = [
     "pm2_5", "pm10", "carbon_monoxide", "carbon_dioxide", "nitrogen_dioxide",
-    "sulphur_dioxide", "ozone", "dust", "us_aqi", "uv_index",
+    "sulphur_dioxide", "ozone", "dust", "us_aqi", "us_aqi_pm2_5", "us_aqi_pm10", "uv_index",
 ]
 CURRENT_VARS = HOURLY_VARS
 
 _session = requests.Session()
-_session.headers["User-Agent"] = "Delhi-AQI-Dashboard/1.0"
+_session.headers["User-Agent"] = "AQIfyMe/1.0"
 
 
 def _get(url, params, timeout=20, retries=2):
@@ -65,10 +65,29 @@ def fetch_history(lat, lon, start: date, end: date) -> pd.DataFrame:
     return df[df.index >= pd.Timestamp(start)]
 
 
+@st.cache_data(ttl=3 * 3600, show_spinner=False)
+def fetch_history_city(city: str, start: date, end: date) -> dict:
+    """Archived hourly data for every locality in a city (one batched request) → {locality: frame}."""
+    names = list(city_locations(city))
+    pad_start = max(HISTORY_START, start - pd.Timedelta(days=1))
+    payload = _get(AQ_URL, {
+        "latitude": ",".join(str(LOCATIONS[n]["lat"]) for n in names),
+        "longitude": ",".join(str(LOCATIONS[n]["lon"]) for n in names),
+        "hourly": ",".join(HOURLY_VARS), "start_date": pad_start.isoformat(), "end_date": end.isoformat(), "timezone": TZ,
+    }, timeout=60)
+    if isinstance(payload, dict):
+        payload = [payload]
+    out = {}
+    for name, item in zip(names, payload):
+        df = add_cpcb_aqi(_hourly_frame(item))
+        out[name] = df[df.index >= pd.Timestamp(start)]
+    return out
+
+
 @st.cache_data(ttl=300, show_spinner=False)
-def fetch_all_current() -> pd.DataFrame:
-    """Current readings for every tracked locality in one batched request."""
-    names = list(LOCATIONS)
+def fetch_all_current(city: str = DEFAULT_CITY) -> pd.DataFrame:
+    """Current readings for every tracked locality in a city, in one batched request."""
+    names = list(city_locations(city))
     payload = _get(AQ_URL, {
         "latitude": ",".join(str(LOCATIONS[n]["lat"]) for n in names),
         "longitude": ",".join(str(LOCATIONS[n]["lon"]) for n in names),
@@ -145,8 +164,8 @@ def save_waqi_token(token: str):
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def waqi_stations(token: str) -> pd.DataFrame:
-    lat1, lon1, lat2, lon2 = DELHI_BOUNDS
+def waqi_stations(token: str, city: str = DEFAULT_CITY) -> pd.DataFrame:
+    lat1, lon1, lat2, lon2 = CITIES[city]["bounds"]
     js = _get(f"{WAQI_URL}/map/bounds/", {"latlng": f"{lat1},{lon1},{lat2},{lon2}", "token": token})
     if js.get("status") != "ok":
         raise RuntimeError(js.get("data", "WAQI error"))

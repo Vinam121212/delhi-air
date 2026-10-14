@@ -165,13 +165,13 @@ def _hfmt(h):
 
 # ── builders ──────────────────────────────────────────────────────────────────
 class DetailBuilder:
-    def __init__(self, *, hourly, now, location, zone, standard, aqi_col, weather, all_current, label):
+    def __init__(self, *, hourly, now, location, zone, standard, aqi_col, weather, all_current, label, city="Delhi NCR"):
         self.h = hourly
         self.now = now
         self.past = hourly[hourly.index <= now]
         self.future = hourly[hourly.index > now]
         self.cur = self.past.iloc[-1]
-        self.loc, self.zone = location, zone
+        self.loc, self.zone, self.city = location, zone, city
         self.std, self.col = standard, aqi_col
         self.cats = categories(standard)
         self.wx = weather or {}
@@ -234,7 +234,7 @@ class DetailBuilder:
                 if self.loc not in set(top["location"]):
                     rows.append((f"📍 {self.loc}", mine, col, f"{mine:,.0f}"))
                 tie_txt = f" (tied with {ties})" if ties else ""
-                rank = section(f"Across Delhi · #{r} most polluted of {len(df)}{tie_txt}", bar_rows(rows) +
+                rank = section(f"Across {self.city} · #{r} most polluted of {len(df)}{tie_txt}", bar_rows(rows) +
                                '<p class="xnote">Model data on a coarse grid — nearby localities can share values.</p>')
         tips = "".join(f"<li>{t}</li>" for t in TIPS.get(key, []))
         body = (head(f"{self.loc} · {m['name'].split('(')[0].strip()}", m["label"], f'{_fmt(v, 1)}<span class="xu">{unit}</span>',
@@ -251,7 +251,7 @@ class DetailBuilder:
                 + "</div>"
                 + (rank or "")
                 + section("How to protect yourself", f'<ul class="xlist">{tips}</ul>'))
-        summary = (f"{m['label']} at {self.loc}, Delhi: {_fmt(v, 1)} {unit}"
+        summary = (f"{m['label']} at {self.loc}, {self.city}: {_fmt(v, 1)} {unit}"
                    + (f" ({cat}, sub-index {si:.0f})" if has_si else "")
                    + (f", {v / m['who']:.1f}× WHO guideline" if m.get("who") and v else "") + ".")
         return {"title": m["label"], "html": body, "summary": summary}
@@ -283,7 +283,7 @@ class DetailBuilder:
                 f'<div><span>🏃</span><b>{h["outdoor"]}</b><i>Outdoors</i></div>'
                 f'<div><span>🌀</span><b>{h["purifier"]}</b><i>Purifier</i></div>'
                 f'<div><span>🪟</span><b>{h["windows"]}</b><i>Windows</i></div></div>')
-        body = (head(f"📍 {self.loc} · {self.zone} Delhi", "Air Quality Index",
+        body = (head(f"📍 {self.loc} · {self.zone}", "Air Quality Index",
                      f'<span class="xnum" style="--num:{int(round(a))}"></span>', f"{emo} {name}", col)
                 + stats + section("What to do right now", recs + f'<p class="xnote">{h["impact"]}</p>')
                 + section("AQI · last 72 hours & next 48 hours", chart)
@@ -296,7 +296,7 @@ class DetailBuilder:
                           "The US EPA AQI uses different breakpoints and is usually higher for the same PM2.5.</p>")
                 + "</div>")
         return {"title": "AQI", "html": body,
-                "summary": f"AQI at {self.loc}, Delhi: {a:.0f} ({name}, {self.std}). Main pollutant: "
+                "summary": f"AQI at {self.loc}, {self.city}: {a:.0f} ({name}, {self.std}). Main pollutant: "
                            f"{self.label.get(self.cur.get('dominant'), '—')}."}
 
     # hourly strip -------------------------------------------------------------
@@ -319,10 +319,10 @@ class DetailBuilder:
         ])
         body = (head(f"📍 {self.loc}", "Hourly forecast", f"{len(fut)} h", "AQI hour by hour", "#7dd3fc")
                 + stats + section("Trend", chart) + section("Next 48 hours", f'<div class="xhours">{"".join(cells)}</div>')
-                + section("Why it changes through the day", "<p>Pollution in Delhi usually peaks late at night and early "
+                + section("Why it changes through the day", "<p>Pollution in most Indian cities peaks late at night and early "
                           "morning, when the air near the ground is cold and still (a low <b>mixing height</b>) and traffic "
                           "and heating emissions get trapped. Afternoon sun heats the ground, the air mixes upward and levels fall.</p>"))
-        return {"title": "Hourly forecast", "html": body, "summary": f"Hourly AQI forecast for {self.loc}, Delhi."}
+        return {"title": "Hourly forecast", "html": body, "summary": f"Hourly AQI forecast for {self.loc}, {self.city}."}
 
     # daily --------------------------------------------------------------------
     def daily(self):
@@ -348,7 +348,7 @@ class DetailBuilder:
         chart = line_chart(list(d.index), series, now=self.now, unit="µg/m³")
         body = (head(f"📍 {self.loc}", "Daily outlook", f"{len(rows)} days", "AQI forecast by day", "#c4b5fd")
                 + section("Day by day", table) + section("Main pollutants ahead", chart))
-        return {"title": "Daily forecast", "html": body, "summary": f"{len(rows)}-day AQI outlook for {self.loc}, Delhi."}
+        return {"title": "Daily forecast", "html": body, "summary": f"{len(rows)}-day AQI outlook for {self.loc}, {self.city}."}
 
     # tiles --------------------------------------------------------------------
     def _wx_hourly(self):
@@ -402,7 +402,7 @@ class DetailBuilder:
                                                                 now=self.now, hlines=[(500, "trapping below ~500 m", "#f87171")], unit="m"))
         body += section("Why it matters", "<p>Strong winds blow pollutants away, while calm winds let them accumulate. "
                         "The <b>mixing height</b> is how high the air can stir — on cold winter nights it can drop below 200 m, "
-                        "squeezing all of Delhi's emissions into a thin layer. That's why smog is worst on still November nights.</p>")
+                        "squeezing a whole city's emissions into a thin layer. That's why north India's smog is worst on still November nights.</p>")
         return {"title": "Wind", "html": body, "summary": f"Wind at {self.loc}: {_fmt(cw.get('wind_speed_10m'))} km/h."}
 
     def humidity(self):
@@ -414,7 +414,7 @@ class DetailBuilder:
             body += section("Humidity (%)", line_chart(list(win.index), [("Humidity", list(win["relative_humidity_2m"]), "#93c5fd")],
                                                        now=self.now, unit="%"))
         body += section("Humidity and smog", "<p>Moist air helps fine particles grow by absorbing water — they scatter more light, "
-                        "so haze looks thicker. In winter, high humidity plus calm winds and cold air creates Delhi's dense smog-fog.</p>")
+                        "so haze looks thicker. In winter, high humidity plus calm winds and cold air creates north India's dense smog-fog.</p>")
         return {"title": "Humidity", "html": body, "summary": f"Humidity at {self.loc}: {_fmt(cw.get('relative_humidity_2m'))}%."}
 
     def visibility(self):
@@ -427,8 +427,8 @@ class DetailBuilder:
             body += section("Visibility (km)", line_chart(list(win.index), [("Visibility", list(win["visibility"] / 1000), "#e2e8f0")],
                                                           now=self.now, unit="km"))
         body += section("Haze vs fog", "<p>Particles scatter sunlight, so heavy PM2.5 shows up as a brownish-grey haze and "
-                        "can cut visibility below 1 km — grounding flights at IGI. True fog is white and forms when air is near "
-                        "100% humidity; Delhi's winter 'smog' is usually both at once.</p>")
+                        "can cut visibility below 1 km — and delaying flights. True fog is white and forms when air is near "
+                        "100% humidity; north India's winter 'smog' is usually both at once.</p>")
         return {"title": "Visibility", "html": body, "summary": f"Visibility at {self.loc}: {_fmt((v or 0) / 1000, 1)} km."}
 
     def main_pollutant(self):

@@ -3,3 +3,4 @@ plotly>=6.0
 pandas>=2.2
 numpy
 requests
+pillow>=10.1

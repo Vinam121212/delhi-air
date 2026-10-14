@@ -3,3 +3,4 @@ __pycache__/
 .streamlit/secrets.toml
 my_exposure.json
 .DS_Store
+digest_preview.png

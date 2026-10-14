@@ -67,6 +67,16 @@ python3 -m venv .venv
 - **Phone friendly**: tighter layout, two-column grids, and full-screen detail panels on small screens.
 - **Putting it online**: see [DEPLOY.md](DEPLOY.md).
 
+## Newest
+- **10 cities, 73 localities**: Delhi NCR (now with Noida, Gurugram, Ghaziabad and Faridabad), Mumbai, Bengaluru, Kolkata,
+  Chennai, Hyderabad, Pune, Lucknow, Chandigarh and Patna. Pick the city at the top of the sidebar.
+- **Station-corrected forecasts**: the nearest live station fixes the model's bias; the correction fades out over about a day.
+- **Private exposure log**: each visitor's log is stored in their own browser (compressed cookies), never on the server.
+- **📤 Share**: an Instagram/WhatsApp-ready image of the current AQI, plus a WhatsApp button and a link that opens your locality.
+- **📊 Weekly report**: this week vs last, cleanest and worst days, hourly rhythm, and every locality in the city ranked.
+- **Telegram morning digest**: `digest.py`, run daily by GitHub Actions at 7:00 AM IST. See [DEPLOY.md](DEPLOY.md) for the
+  2-minute bot setup.
+
 ## Data
 - [Open-Meteo Air Quality API](https://open-meteo.com/en/docs/air-quality-api) (Copernicus CAMS model): free, no key.
   It's model data on a coarse grid, so nearby localities can show similar values.

@@ -7,7 +7,7 @@ _LANG = "en"
 HI = {
     # sidebar
     "Live air-quality intelligence": "लाइव वायु-गुणवत्ता जानकारी",
-    "Location": "स्थान", "Zone": "क्षेत्र", "Locality": "इलाका", "All zones": "सभी क्षेत्र",
+    "Location": "स्थान", "City": "शहर", "Zone": "क्षेत्र", "Locality": "इलाका", "All zones": "सभी क्षेत्र",
     "Use my location": "मेरा स्थान इस्तेमाल करें", "Pollutants": "प्रदूषक", "Focus pollutant": "मुख्य प्रदूषक चुनें",
     "Overall AQI": "कुल AQI", "Pollutants on trend charts": "ट्रेंड चार्ट पर प्रदूषक", "AQI standard": "AQI मानक",
     "Health profile": "स्वास्थ्य प्रोफ़ाइल", "Live updates": "लाइव अपडेट", "Auto-refresh": "अपने-आप रीफ़्रेश",
@@ -17,7 +17,7 @@ HI = {
     "Live station data (optional)": "लाइव स्टेशन डेटा (वैकल्पिक)",
     "Live station data is on for everyone": "सभी के लिए लाइव स्टेशन डेटा चालू है", "Measured at": "यहाँ मापा गया",
     # views & tabs
-    "🌍 Live": "🌍 लाइव", "⚖️ Compare": "⚖️ तुलना", "🫁 My exposure": "🫁 मेरा एक्सपोज़र", "📅 History": "📅 इतिहास",
+    "🌍 Live": "🌍 लाइव", "📊 Weekly": "📊 साप्ताहिक", "Weekly report": "साप्ताहिक रिपोर्ट", "⚖️ Compare": "⚖️ तुलना", "🫁 My exposure": "🫁 मेरा एक्सपोज़र", "📅 History": "📅 इतिहास",
     "📚 Learn": "📚 जानें", "📈 Trends": "📈 ट्रेंड", "🔮 Forecast": "🔮 पूर्वानुमान", "🗓️ Planner": "🗓️ प्लानर",
     "🔎 Why?": "🔎 क्यों?", "🗺️ Map": "🗺️ नक्शा", "🏙️ Compare areas": "🏙️ इलाकों की तुलना", "❤️ Health advice": "❤️ स्वास्थ्य सलाह",
     # hero / home
