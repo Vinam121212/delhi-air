@@ -12,10 +12,10 @@ from urllib.parse import quote
 import data
 from aqi import (CATEGORY_DESC, GRAP_STAGES, HEALTH, PERSONA_TIPS, POLLUTANTS, categories, category,
                  cigarettes_per_day, sub_index)
-from locations import CITIES, DEFAULT_CITY, LOCATIONS, city_locations
+from locations import CITIES, DEFAULT_CITY, LOCATIONS, city_locations, tz_of
 from browser_js import alerts_html, geolocate_html, nearest_locality
-from causes import analyse, fetch_fires
-from details import DetailBuilder
+from causes import FIRE_RADIUS_KM, analyse, fetch_fires, region_for
+from details import POLLEN_NAMES, DetailBuilder, pollen_level, uv_level, wmo
 from sharecard import make_card
 from station import calibrate
 import health_log as hl
@@ -23,7 +23,7 @@ from planner import ACTIVITIES, dose_ug, find_slots, verdict
 from i18n import set_lang, t
 from expand import EXPAND_CSS, expand_html
 from intro import INTRO_CSS, intro_html
-from sky import sky_html
+from sky import sky_html, weather_state
 from ui import CSS, compact, hex_to_rgba, scale_html, style_fig
 
 st.set_page_config(page_title="AQIfyMe · Live air quality", page_icon="🌤️", layout="wide",
@@ -33,16 +33,16 @@ st.markdown(EXPAND_CSS, unsafe_allow_html=True)
 st.markdown(INTRO_CSS, unsafe_allow_html=True)
 st.html(intro_html(), unsafe_allow_javascript=True)   # plays once per session, before the page fades in
 
-TZ = data.TZ
+TZ = data.TZ          # replaced by the chosen place's timezone once the sidebar has run
 CHART_CFG = {"displayModeBar": False}
 AQI_POLLUTANTS = ["pm2_5", "pm10", "nitrogen_dioxide", "ozone", "carbon_monoxide", "sulphur_dioxide"]
 ALL_POLLUTANTS = AQI_POLLUTANTS + ["carbon_dioxide", "dust"]
 LABEL = {k: v["label"] for k, v in POLLUTANTS.items()}
 LABEL.update({"AQI": "AQI"})
-TILE_KEYS = ["main", "cig", "change", "wind", "humidity", "visibility"]
+TILE_KEYS = ["main", "cig", "change", "wind", "humidity", "visibility", "weather", "uv", "pollen"]
 
 
-def now_ist():
+def now_local():
     return pd.Timestamp.now(tz=TZ).tz_localize(None)
 
 
@@ -57,28 +57,53 @@ with st.sidebar:
                 f"<div class='brand-sub'>{t('Live air-quality intelligence')}</div></div></div>", unsafe_allow_html=True)
 
     st.markdown(f"#### {t('Location')}")
-    # ?near=lat,lon (set by the "Use my location" button) or ?loc=Name (shared links) pick the locality
-    near_note, near_loc = None, None
-    if "near" in st.query_params:
+    # Pick a place, in priority order: a search result, ?near=lat,lon ("Use my location" / shared links),
+    # ?loc=Name (shared links), then the curated city / zone / locality pickers.
+    custom, near_note, near_loc = None, None, None
+    q = st.text_input("🔎 " + t("Search any place in the world"), key="place_q", placeholder="London, Lagos, Shimla, 10001…")
+    if q.strip():
+        try:
+            results = data.geocode(q)
+        except Exception:
+            results = []
+        if results:
+            i = st.selectbox(t("Results"), range(len(results)), format_func=lambda k: results[k]["label"], key=f"pick_{q}")
+            custom = {**results[i], "name": results[i]["name"]}
+        else:
+            st.caption("No places found — try a city name.")
+    if custom is None and "near" in st.query_params:
         try:
             _lat, _lon = (float(x) for x in st.query_params["near"].split(","))
             near_loc, d_loc, d_city = nearest_locality(_lat, _lon)
             _c = LOCATIONS[near_loc]["city"]
-            near_note = (f"📍 You're {d_loc:.1f} km from {near_loc}, {_c}." if d_city < 60 else
-                         f"📍 You're {d_city:,.0f} km from {_c}, the closest city we track — showing {near_loc}.")
+            if d_loc <= 15:
+                near_note = f"📍 You're {d_loc:.1f} km from {near_loc}, {_c}."
+            else:
+                near_loc = None
+                custom = {"name": t("My location"), "label": f"{_lat:.3f}, {_lon:.3f}", "lat": _lat, "lon": _lon,
+                          "tz": data.timezone_at(round(_lat, 2), round(_lon, 2)), "country": "",
+                          "zone": f"Near {_c}" if d_city < 150 else "Your area"}
+                near_note = "📍 Showing your exact location."
         except ValueError:
             pass
-    elif st.query_params.get("loc") in LOCATIONS:
+    elif custom is None and st.query_params.get("loc") in LOCATIONS:
         near_loc = st.query_params["loc"]
-    cities = list(CITIES)
-    city_default = LOCATIONS[near_loc]["city"] if near_loc else DEFAULT_CITY
-    city = st.selectbox(t("City"), cities, index=cities.index(city_default), key=f"city_{city_default}")
-    c_locs = city_locations(city)
-    zones = ["All zones"] + sorted({v["zone"] for v in c_locs.values()})
-    zone = st.selectbox(t("Zone"), zones, label_visibility="collapsed", format_func=t, key=f"zone_{city}")
-    loc_options = [n for n, v in c_locs.items() if zone == "All zones" or v["zone"] == zone]
-    pref = near_loc if near_loc in loc_options else ("ITO" if "ITO" in loc_options else loc_options[0])
-    location = st.selectbox(t("Locality"), loc_options, index=loc_options.index(pref), key=f"loc_{city}_{zone}_{pref}")
+
+    if custom:
+        location, city, zone = custom["name"], f"{custom['name']} area", custom["zone"]
+        st.markdown(f"<div class='station-pill' style='margin:.2rem 0 .6rem'>🌍 {custom['label']}</div>", unsafe_allow_html=True)
+        st.caption(t("Clear the search box to go back to the city list."))
+    else:
+        cities = list(CITIES)
+        city_default = LOCATIONS[near_loc]["city"] if near_loc else DEFAULT_CITY
+        city = st.selectbox(t("City"), cities, index=cities.index(city_default), key=f"city_{city_default}",
+                            format_func=lambda c: f"{'🇮🇳' if CITIES[c]['country'] == 'India' else '🌍'} {c}")
+        c_locs = city_locations(city)
+        zones = ["All zones"] + sorted({v["zone"] for v in c_locs.values()})
+        zone = st.selectbox(t("Zone"), zones, label_visibility="collapsed", format_func=t, key=f"zone_{city}")
+        loc_options = [n for n, v in c_locs.items() if zone == "All zones" or v["zone"] == zone]
+        pref = near_loc if near_loc in loc_options else ("ITO" if "ITO" in loc_options else loc_options[0])
+        location = st.selectbox(t("Locality"), loc_options, index=loc_options.index(pref), key=f"loc_{city}_{zone}_{pref}")
     if st.button(f"📍 {t('Use my location')}", width="stretch"):
         st.session_state["geo_request"] = True
     if st.session_state.pop("geo_request", False):
@@ -91,7 +116,9 @@ with st.sidebar:
                          format_func=lambda k: t("Overall AQI") if k == "AQI" else f"{LABEL[k]} — {POLLUTANTS[k]['name']}")
     trend_pollutants = st.multiselect(t("Pollutants on trend charts"), ALL_POLLUTANTS,
                                       default=["pm2_5", "pm10", "nitrogen_dioxide"], format_func=LABEL.get)
-    standard = st.radio(t("AQI standard"), ["India (CPCB)", "US (EPA)"], horizontal=True)
+    _in_india = (custom or {}).get("country", CITIES.get(city, {}).get("country")) == "India"
+    standard = st.radio(t("AQI standard"), ["India (CPCB)", "US (EPA)"], horizontal=True, index=0 if _in_india else 1,
+                        key=f"std_{_in_india}")
 
     st.markdown(f"#### {t('Health profile')}")
     persona = st.selectbox("I am…", list(PERSONA_TIPS), label_visibility="collapsed")
@@ -130,13 +157,34 @@ with st.sidebar:
 
 AQI_COL = "in_aqi" if standard == "India (CPCB)" else "us_aqi"
 CATS = categories(standard)
-LOC = LOCATIONS[location]
-CITY_CFG = CITIES[city]
+ALL_LOCS = dict(LOCATIONS)
+if custom:
+    ALL_LOCS[location] = {"lat": custom["lat"], "lon": custom["lon"], "zone": custom["zone"], "city": city,
+                          "tz": custom["tz"], "custom": True}
+LOC = ALL_LOCS[location]
+IS_CUSTOM = bool(custom)
+CITY_CFG = CITIES.get(city) or {
+    "center": {"lat": LOC["lat"], "lon": LOC["lon"]}, "zoom": 10, "tz": LOC["tz"], "country": custom.get("country", ""),
+    "bounds": (LOC["lat"] - 0.35, LOC["lon"] - 0.45, LOC["lat"] + 0.35, LOC["lon"] + 0.45),
+    "north": custom.get("country") == "India" and LOC["lat"] > 24}
+TZ = tz_of(LOC)
+IN_INDIA = CITY_CFG.get("country") == "India"
+
+
+def city_current() -> pd.DataFrame:
+    """Latest reading for every locality in the current city; a searched place is a 'city' of one."""
+    if not IS_CUSTOM:
+        return data.fetch_all_current(city)
+    h = data.fetch_hourly(LOC["lat"], LOC["lon"], tz=TZ)
+    last = h[h.index <= now_local().floor("h")].iloc[-1]
+    return pd.DataFrame([{"location": location, **LOC, **last.to_dict()}])
 
 
 def place(loc_name):
     """'Central Delhi' for NCR localities, 'West, Pune' elsewhere."""
-    v = LOCATIONS[loc_name]
+    v = ALL_LOCS[loc_name]
+    if v.get("custom") or v["zone"] == v["city"]:
+        return v["zone"] if v.get("custom") else f"{v['city']}, {CITIES[v['city']]['country']}"
     return v["zone"] if v["city"] == "Delhi NCR" else f"{v['zone']}, {v['city']}"
 
 
@@ -151,15 +199,17 @@ def show(html):
     st.markdown(compact(html), unsafe_allow_html=True)
 
 
-def sky_for(level):
-    """Inject / update the WebGL sky. URL overrides ?sky=0..5 and ?hour=0..23 preview other conditions."""
+def sky_for(level, current_weather=None):
+    """Inject / update the WebGL sky. URL overrides preview other conditions:
+    ?sky=0..5 (air), ?hour=0..23 (time), ?wx=rain|snow|storm|fog|clear (weather)."""
     qp = st.query_params
     try:
         level = float(qp.get("sky", level))
-        hour = float(qp.get("hour", now_ist().hour + now_ist().minute / 60))
+        hour = float(qp.get("hour", now_local().hour + now_local().minute / 60))
     except ValueError:
-        hour = now_ist().hour + now_ist().minute / 60
-    st.html(sky_html(level, hour, paused=not motion), unsafe_allow_javascript=True)
+        hour = now_local().hour + now_local().minute / 60
+    st.html(sky_html(level, hour, paused=not motion, wx=weather_state(current_weather, qp.get("wx"))),
+            unsafe_allow_javascript=True)
 
 
 def pollutant_card(key, value, si, delay):
@@ -208,7 +258,7 @@ def render_share(location, aqi_now, cat_name, cat_col, cur, past, stn, in_level)
         png = _card_png(location=location, place=place(location), aqi=float(aqi_now), standard=standard, category=cat_name,
                         colour=cat_col, pm25=float(cur["pm2_5"]), cigarettes=float(cig),
                         main_pollutant=LABEL.get(dom, "—") if isinstance(dom, str) else "—",
-                        time_str=f"{now_ist():%d %b · %-I:%M %p}", url=PUBLIC_URL.replace("https://", ""),
+                        time_str=f"{now_local():%d %b · %-I:%M %p}", url=PUBLIC_URL.replace("https://", ""),
                         station=stn["name"] if stn else None, advice=f"{h['outdoor']} · Mask: {h['mask']}")
         st.image(png, width="stretch")
         st.download_button("⬇️ Save image", png, file_name=f"aqifyme-{location.replace(' ', '-').lower()}.png",
@@ -236,28 +286,28 @@ def outlook_sentence(past, future, aqi_now, cat_name):
 
 def render_live():
     try:
-        hourly = data.fetch_hourly(LOC["lat"], LOC["lon"])
+        hourly = data.fetch_hourly(LOC["lat"], LOC["lon"], tz=TZ)
     except Exception as e:
         st.error(f"Couldn't reach the air-quality service — retrying on the next refresh. ({e})")
         return
     try:
-        weather = data.fetch_weather(LOC["lat"], LOC["lon"])
+        weather = data.fetch_weather(LOC["lat"], LOC["lon"], tz=TZ)
     except Exception:
         weather = {}
     w = weather.get("current", {})
     stn = data.station_reading(LOC["lat"], LOC["lon"])
     calib = None
     if stn and calibrate_on:
-        hourly, calib = calibrate(hourly, stn, now_ist().floor("h"))
+        hourly, calib = calibrate(hourly, stn, now_local().floor("h"))
 
-    now = now_ist().floor("h")
+    now = now_local().floor("h")
     past = hourly[hourly.index <= now]
     future = hourly[hourly.index > now]
     cur = past.iloc[-1]
     aqi_now = cur[AQI_COL]
     cat_name, cat_col, cat_emoji, level = category(aqi_now, standard)
     in_level = category(cur["in_aqi"], "India (CPCB)")[3]
-    sky_for(in_level)
+    sky_for(in_level, w)
 
     # ── hero (iOS Weather style) ─────────────────────────────────────────────
     station_line = ""
@@ -290,7 +340,7 @@ def render_live():
       <div class="hero-hl">H: {today.max():.0f}&nbsp;&nbsp;L: {today.min():.0f} &nbsp;·&nbsp; {standard} AQI</div>
       {station_line}
       {pill}
-      <div style="font-size:.72rem;color:var(--muted);margin-top:.45rem">{t('Reading for')} {past.index[-1]:%d %b, %-I:%M %p} IST · {t('checked')} {now_ist():%-I:%M:%S %p} · {t('Tap any box for details')}</div>
+      <div style="font-size:.72rem;color:var(--muted);margin-top:.45rem">{t('Reading for')} {past.index[-1]:%d %b, %-I:%M %p} {pd.Timestamp.now(tz=TZ).strftime("%Z")} · {t('checked')} {now_local():%-I:%M:%S %p} · {t('Tap any box for details')}</div>
     </div>""")
 
     render_share(location, aqi_now, cat_name, cat_col, cur, past, stn, in_level)
@@ -360,6 +410,31 @@ def render_live():
             ("👁️ " + t("Visibility"), "—" if not vis else f"{vis / 1000:.1f} km",
              "Haze is cutting visibility." if vis and vis < 5000 else "Fairly clear horizon."),
         ]
+        w_e, w_txt = wmo(w.get("weather_code"), bool(w.get("is_day", 1)))
+        hw = weather.get("hourly", {})
+        rain_next = None
+        if hw.get("precipitation_probability"):
+            _wt = pd.to_datetime(pd.Series(hw["time"]))
+            _pp = pd.Series(hw["precipitation_probability"])[(_wt > now) & (_wt <= now + pd.Timedelta(hours=12))]
+            rain_next = _pp.max() if not _pp.empty else None
+        tiles.append((f"{w_e} " + t("Weather"), f"{w.get('temperature_2m', 0):.0f}°" if w.get("temperature_2m") is not None else "—",
+                      f"{w_txt}" + (f" · {rain_next:.0f}% rain chance in 12 h" if rain_next is not None else "")))
+        uv = w.get("uv_index")
+        uv_lvl, uv_col, uv_adv = uv_level(uv)
+        tiles.append(("☀️ " + t("UV index"), f'<span style="color:{uv_col}">{uv:.0f}</span>' if uv is not None else "—",
+                      f"{uv_lvl} — {uv_adv}" if uv is not None else "No UV data."))
+        try:
+            pollen = data.fetch_pollen(LOC["lat"], LOC["lon"], tz=TZ)
+        except Exception:
+            pollen = {}
+        if pollen:
+            k, v = max(pollen.items(), key=lambda kv: kv[1])
+            p_lvl, p_col = pollen_level(v)
+            tiles.append(("🌼 " + t("Pollen"), f'<span style="color:{p_col}">{p_lvl if v >= 1 else "None"}</span>',
+                          f"Mostly {POLLEN_NAMES[k].lower()} · {v:.0f} grains/m³" if v >= 1 else "No pollen in the air right now."))
+        else:
+            tiles.append(("🌡️ " + t("Feels like"), f"{w.get('apparent_temperature', 0):.0f}°" if w.get("apparent_temperature") is not None else "—",
+                          "Pollen data covers Europe only." if not IN_INDIA else "Heat and humidity combined."))
         show('<div class="tiles">' + "".join(
             f'<div class="card tile xp" data-detail="{tk}" style="animation-delay:{.2 + .05 * i:.2f}s"><span class="xp-hint">⤢</span>'
             f'<div class="card-label">{lab}</div><div class="big">{val}</div><div class="note">{note}</div></div>'
@@ -379,13 +454,15 @@ def render_live():
 
     # ── expanded views for every box above ────────────────────────────────────
     try:
-        all_current = data.fetch_all_current(city)
+        all_current = city_current()
     except Exception:
         all_current = None
     db = DetailBuilder(hourly=hourly, now=now, location=location, zone=LOC["zone"], standard=standard, aqi_col=AQI_COL,
                        weather=weather, all_current=all_current, label=LABEL, city=city)
     builders = {"aqi": db.aqi, "hourly": db.hourly, "daily": db.daily, "scale": db.scale, "main": db.main_pollutant,
                 "cig": db.cigarettes, "change": db.change, "wind": db.wind, "humidity": db.humidity, "visibility": db.visibility,
+                "weather": db.weather_view, "uv": db.uv_view,
+                "pollen": (lambda: db.pollen_view(pollen)) if pollen else db.weather_view,
                 **{k: (lambda k=k: db.pollutant(k)) for k in ALL_POLLUTANTS}}
     details = {}
     for k, fn in builders.items():
@@ -531,7 +608,7 @@ def render_map(token):
     stations = None
     if token:
         try:
-            stations = data.waqi_stations(token, city)
+            stations = data.waqi_stations(token, CITY_CFG['bounds'])
         except Exception as e:
             st.warning(f"Couldn't load WAQI stations ({e}); showing model data instead.")
     if stations is not None and not stations.empty:
@@ -540,7 +617,7 @@ def render_map(token):
         df["category"] = [category(v, "US (EPA)")[0] for v in df["aqi"]]
         value_col, title = "aqi", "Live CPCB/DPCC ground stations (US-scale AQI)"
     else:
-        df = data.fetch_all_current(city).rename(columns={"location": "name"})
+        df = city_current().rename(columns={"location": "name"})
         value_col = AQI_COL if focus == "AQI" else focus
         df["colour"] = [aqi_colour(v) for v in df[AQI_COL]]
         df["category"] = [category(v, standard)[0] for v in df[AQI_COL]]
@@ -553,7 +630,7 @@ def render_map(token):
         marker=dict(size=size, color=df["colour"], opacity=.85),
         customdata=np.stack([df["name"], vals.round(0), df["category"]], axis=-1),
         hovertemplate="<b>%{customdata[0]}</b><br>Value: %{customdata[1]}<br>%{customdata[2]}<extra></extra>"))
-    sel = LOCATIONS[location]
+    sel = LOC
     fig.add_trace(go.Scattermap(lat=[sel["lat"]], lon=[sel["lon"]], mode="markers", hoverinfo="skip",
                                 marker=dict(size=46, color="rgba(56,189,248,0.25)")))
     fig.update_layout(map=dict(style="carto-darkmatter", center=CITY_CFG["center"], zoom=CITY_CFG["zoom"]), title=title)
@@ -566,7 +643,7 @@ def render_map(token):
 # ── tab: compare ──────────────────────────────────────────────────────────────
 def render_station_ranking(token):
     try:
-        stations = data.waqi_stations(token, city)
+        stations = data.waqi_stations(token, CITY_CFG['bounds'])
     except Exception as e:
         st.warning(f"Live stations unavailable: {e}")
         return
@@ -586,7 +663,7 @@ def render_compare():
     if token:
         render_station_ranking(token)
         st.caption("Below: the model estimate for each tracked locality, which also drives the forecasts.")
-    df = data.fetch_all_current(city)
+    df = city_current()
     metric = AQI_COL if focus == "AQI" else focus
     unit = "AQI" if focus == "AQI" else POLLUTANTS[focus]["unit"]
     df = df.sort_values(metric, ascending=True)
@@ -706,12 +783,13 @@ def render_planner(future, now):
 def render_causes(hourly, now, weather):
     st.markdown(f"##### 🔎 {t('Why is the air like this?')}")
     fires = None
-    if CITY_CFG["north"]:
-        try:
-            fires = fetch_fires()
-        except Exception as e:
-            st.caption(f"Fire data unavailable: {e}")
-    factors, facts = analyse(hourly, now, weather, fires, city=city, north=CITY_CFG["north"])
+    try:
+        fires = fetch_fires(region_for(LOC["lat"], LOC["lon"]))
+    except Exception as e:
+        st.caption(f"Fire data unavailable: {e}")
+    factors, facts = analyse(hourly, now, weather, fires, city=location, north=CITY_CFG.get("north", False),
+                             lat=LOC["lat"], lon=LOC["lon"], india=IN_INDIA)
+    fires = facts.get("near_fires")
     top = [f for f in factors if f["score"] >= .25] or factors[:1]
     st.markdown(compact(f"""<div class="card" style="margin-bottom:1rem"><div class="summary">
       Main drivers right now: <b>{', '.join(f['title'].lower() for f in top[:3])}</b>.<br>
@@ -732,18 +810,20 @@ def render_causes(hourly, now, weather):
         fig = go.Figure(go.Scattermap(lat=fires["latitude"], lon=fires["longitude"], mode="markers",
                                       marker=dict(size=(4 + fires["frp"].clip(0, 60) / 6).tolist(), color="#ff5a1f", opacity=.75),
                                       hovertemplate="Fire · %{lat:.2f}, %{lon:.2f}<extra></extra>", name="Fires"))
-        fig.add_trace(go.Scattermap(lat=[CITY_CFG["center"]["lat"]], lon=[CITY_CFG["center"]["lon"]], mode="markers+text", text=[city],
+        fig.add_trace(go.Scattermap(lat=[LOC["lat"]], lon=[LOC["lon"]], mode="markers+text", text=[location],
                                     textposition="bottom center", textfont=dict(color="#fff", size=13),
                                     marker=dict(size=18, color="#7dd3fc"), hoverinfo="skip"))
         wd = facts["wdir"]
         if wd == wd:  # not NaN: arrow showing where the wind blows FROM toward Delhi
             import math as _m
             rad = _m.radians(wd)
-            src = (CITY_CFG["center"]["lat"] + 1.6 * _m.cos(rad), CITY_CFG["center"]["lon"] + 1.6 * _m.sin(rad) / _m.cos(_m.radians(CITY_CFG['center']['lat'])))
-            fig.add_trace(go.Scattermap(lat=[src[0], CITY_CFG["center"]["lat"]], lon=[src[1], CITY_CFG["center"]["lon"]], mode="lines",
+            src = (LOC["lat"] + 1.6 * _m.cos(rad), LOC["lon"] + 1.6 * _m.sin(rad) / _m.cos(_m.radians(LOC['lat'])))
+            fig.add_trace(go.Scattermap(lat=[src[0], LOC["lat"]], lon=[src[1], LOC["lon"]], mode="lines",
                                         line=dict(width=4, color="rgba(255,255,255,.8)"), hoverinfo="skip"))
-        fig.update_layout(map=dict(style="carto-darkmatter", center={"lat": 29.9, "lon": 76.2}, zoom=5.6),
-                          title=f"🔥 {len(fires):,} fire hotspots in the last 24 h (NASA VIIRS) · white line = wind toward {city}")
+        mid = ({"lat": 29.9, "lon": 76.2}, 5.6) if CITY_CFG.get("north") else ({"lat": LOC["lat"], "lon": LOC["lon"]}, 5.2)
+        fig.update_layout(map=dict(style="carto-darkmatter", center=mid[0], zoom=mid[1]),
+                          title=f"🔥 {len(fires):,} fire hotspots within {FIRE_RADIUS_KM} km in the last 24 h (NASA) · "
+                                f"white line = wind toward {location}")
         st.plotly_chart(style_fig(fig, height=480, legend=False), width="stretch", config={"scrollZoom": True, **CHART_CFG})
 
 
@@ -755,20 +835,26 @@ def render_compare_places():
                 "<div class='hero-sub'>Home vs office, school vs park — see which has cleaner air now and ahead.</div>",
                 unsafe_allow_html=True)
     st.write("")
-    names = list(LOCATIONS)
+    names = list(ALL_LOCS)
     c1, c2 = st.columns(2)
-    a = c1.selectbox(t("Place A"), names, index=names.index(location), key="cmp_a", format_func=lambda n: f"{n} · {LOCATIONS[n]['city']}")
+    a = c1.selectbox(t("Place A"), names, index=names.index(location), key="cmp_a", format_func=lambda n: f"{n} · {ALL_LOCS[n]['city']}")
     same_city = [n for n in city_locations(city) if n != location]
     b = c2.selectbox(t("Place B"), names, index=names.index(same_city[min(9, len(same_city) - 1)] if same_city else names[0]),
-                     key="cmp_b", format_func=lambda n: f"{n} · {LOCATIONS[n]['city']}")
-    now = now_ist().floor("h")
+                     key="cmp_b", format_func=lambda n: f"{n} · {ALL_LOCS[n]['city']}")
+    tz_a = tz_of(ALL_LOCS[a])
+    now = pd.Timestamp.now(tz=tz_a).tz_localize(None).floor("h")
     frames = {}
     for n in (a, b):
         try:
-            frames[n] = data.fetch_hourly(LOCATIONS[n]["lat"], LOCATIONS[n]["lon"])
+            frames[n] = data.fetch_hourly(ALL_LOCS[n]["lat"], ALL_LOCS[n]["lon"], tz=tz_of(ALL_LOCS[n]))
         except Exception as e:
             st.error(f"{n}: {e}")
             return
+    for n in (a, b):   # put both places on place A's clock so the charts line up across timezones
+        shift = pd.Timestamp.now(tz=tz_a).utcoffset() - pd.Timestamp.now(tz=tz_of(ALL_LOCS[n])).utcoffset()
+        if shift:
+            frames[n] = frames[n].copy()
+            frames[n].index = frames[n].index + shift
     cols = st.columns(2, gap="medium")
     cur = {}
     for col, n, accent in zip(cols, (a, b), ("#7dd3fc", "#f9a8d4")):
@@ -865,7 +951,7 @@ def render_exposure():
     db = exposure_db()
     if st.session_state.pop("exp_dirty", False):
         st.html(exposure_cookie_js(db), unsafe_allow_javascript=True)
-    today = now_ist().date()   # Delhi's date, not this computer's
+    today = now_local().date()   # Delhi's date, not this computer's
     s_today = hl.day_summary(db, today.isoformat())
     cur_streak, best_streak = hl.streaks(db, today)
     left, mid, right = st.columns([1, 1, 1.2], gap="medium")
@@ -892,12 +978,12 @@ def render_exposure():
             start = f2.time_input("Start", value=pd.Timestamp("2000-01-01 08:00").time(), step=900)
             f3, f4 = st.columns(2)
             mins = f3.number_input("Minutes", 5, 720, 60, step=5)
-            loc = f4.selectbox("Where", list(LOCATIONS), index=list(LOCATIONS).index(location))
+            loc = f4.selectbox("Where", list(ALL_LOCS), index=list(ALL_LOCS).index(location))
             act = st.selectbox("Doing", list(ACTIVITIES) + ["🧍 Other / errands"])
             if st.form_submit_button(t("Add"), width="stretch"):
                 try:
-                    lat, lon = LOCATIONS[loc]["lat"], LOCATIONS[loc]["lon"]
-                    hrs = data.fetch_hourly(lat, lon) if (today - d).days <= 2 else data.fetch_history(lat, lon, d, d)
+                    lat, lon, ltz = ALL_LOCS[loc]["lat"], ALL_LOCS[loc]["lon"], tz_of(ALL_LOCS[loc])
+                    hrs = data.fetch_hourly(lat, lon, tz=ltz) if (today - d).days <= 2 else data.fetch_history(lat, lon, d, d, tz=ltz)
                     day_df = hrs[hrs.index.date == d]
                     t0 = pd.Timestamp.combine(d, start).floor("h")
                     win = day_df[(day_df.index >= t0) & (day_df.index < t0 + pd.Timedelta(minutes=int(mins)) + pd.Timedelta(minutes=59))]
@@ -949,7 +1035,7 @@ def render_exposure():
 # Weekly report
 # ══════════════════════════════════════════════════════════════════════════════
 def render_weekly():
-    today = now_ist().date()
+    today = now_local().date()
     this_start, this_end = today - timedelta(days=7), today - timedelta(days=1)
     last_start = today - timedelta(days=14)
     st.markdown(f"<h2 class='hero-title' style='font-size:1.8rem'>📊 {t('Weekly report')}</h2>"
@@ -958,7 +1044,8 @@ def render_weekly():
     st.write("")
     with st.spinner("Crunching two weeks of data…"):
         try:
-            frames = data.fetch_history_city(city, last_start, this_end)
+            frames = ({location: data.fetch_history(LOC["lat"], LOC["lon"], last_start, this_end, tz=TZ)} if IS_CUSTOM
+                      else data.fetch_history_city(city, last_start, this_end))
         except Exception as e:
             st.error(f"Couldn't load the archive: {e}")
             return
@@ -1015,7 +1102,7 @@ def render_weekly():
     for loc, f in frames.items():
         d = f.resample("D")[AQI_COL].mean()
         cur_w, prev_w = d[d.index.date >= this_start].mean(), d[d.index.date < this_start].mean()
-        rows.append({"Locality": loc, "Zone": LOCATIONS[loc]["zone"], "This week": round(cur_w), "Week before": round(prev_w),
+        rows.append({"Locality": loc, "Zone": ALL_LOCS[loc]["zone"], "This week": round(cur_w), "Week before": round(prev_w),
                      "Change": f"{'▲' if cur_w > prev_w else '▼'} {abs(cur_w - prev_w) / prev_w:.0%}" if prev_w else "—",
                      "Category": category(cur_w, standard)[0]})
     rank = pd.DataFrame(rows).sort_values("This week", ascending=False).reset_index(drop=True)
@@ -1039,7 +1126,7 @@ def render_history():
     today = date.today()
     c1, c2, c3 = st.columns([1.6, 1.2, 1])
     with c1:
-        locs = st.multiselect("Localities (up to 4)", list(LOCATIONS), default=[location], max_selections=4,
+        locs = st.multiselect("Localities (up to 4)", list(ALL_LOCS), default=[location], max_selections=4,
                               key="hist_locs")
     with c2:
         rng = st.date_input("Date range", value=(today - timedelta(days=30), today - timedelta(days=1)),
@@ -1071,7 +1158,7 @@ def render_history():
     with st.spinner("Fetching archive data…"):
         for loc in locs:
             try:
-                frames[loc] = data.fetch_history(LOCATIONS[loc]["lat"], LOCATIONS[loc]["lon"], start, end)
+                frames[loc] = data.fetch_history(ALL_LOCS[loc]["lat"], ALL_LOCS[loc]["lon"], start, end, tz=tz_of(ALL_LOCS[loc]))
             except Exception as e:
                 st.error(f"{loc}: {e}")
     if not frames:
@@ -1085,8 +1172,8 @@ def render_history():
                                  line=dict(width=2.5, shape="spline")))
     if yoy and start - timedelta(days=365) >= data.HISTORY_START:
         loc0 = locs[0]
-        prev = data.fetch_history(LOCATIONS[loc0]["lat"], LOCATIONS[loc0]["lon"],
-                                  start - timedelta(days=365), end - timedelta(days=365))
+        prev = data.fetch_history(ALL_LOCS[loc0]["lat"], ALL_LOCS[loc0]["lon"],
+                                  start - timedelta(days=365), end - timedelta(days=365), tz=tz_of(ALL_LOCS[loc0]))
         s = prev[col_name] if hourly_mode else prev[col_name].resample("D").mean()
         s.index = s.index + pd.Timedelta(days=365)
         fig.add_trace(go.Scatter(x=s.index, y=s.values, name=f"{loc0} · year before", mode="lines",
@@ -1231,8 +1318,8 @@ if view == "🌍 Live":
     st.fragment(run_every=f"{every}m" if auto else None)(render_live)()
 else:
     try:  # sky reflects the selected locality's current air on the other pages too
-        _h = data.fetch_hourly(LOC["lat"], LOC["lon"])
-        sky_for(category(_h[_h.index <= now_ist().floor("h")].iloc[-1]["in_aqi"], "India (CPCB)")[3])
+        _h = data.fetch_hourly(LOC["lat"], LOC["lon"], tz=TZ)
+        sky_for(category(_h[_h.index <= now_local().floor("h")].iloc[-1]["in_aqi"], "India (CPCB)")[3])
     except Exception:
         sky_for(2)
     {"⚖️ Compare": render_compare_places, "📊 Weekly": render_weekly, "🫁 My exposure": render_exposure, "📅 History": render_history,

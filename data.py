@@ -44,22 +44,22 @@ def _hourly_frame(payload) -> pd.DataFrame:
 
 # ── Open-Meteo ────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=300, show_spinner=False)
-def fetch_hourly(lat, lon, past_days=3, forecast_days=4) -> pd.DataFrame:
+def fetch_hourly(lat, lon, past_days=3, forecast_days=4, tz: str = TZ) -> pd.DataFrame:
     """Hourly pollutants for recent past + forecast, with CPCB AQI columns."""
     payload = _get(AQ_URL, {
         "latitude": lat, "longitude": lon, "hourly": ",".join(HOURLY_VARS),
-        "past_days": past_days, "forecast_days": forecast_days, "timezone": TZ,
+        "past_days": past_days, "forecast_days": forecast_days, "timezone": tz,
     })
     return add_cpcb_aqi(_hourly_frame(payload))
 
 
 @st.cache_data(ttl=6 * 3600, show_spinner=False)
-def fetch_history(lat, lon, start: date, end: date) -> pd.DataFrame:
+def fetch_history(lat, lon, start: date, end: date, tz: str = TZ) -> pd.DataFrame:
     """Archived hourly data for an arbitrary date range (padded 1 day earlier so 24h averages are complete)."""
     pad_start = max(HISTORY_START, start - pd.Timedelta(days=1))
     payload = _get(AQ_URL, {
         "latitude": lat, "longitude": lon, "hourly": ",".join(HOURLY_VARS),
-        "start_date": pad_start.isoformat(), "end_date": end.isoformat(), "timezone": TZ,
+        "start_date": pad_start.isoformat(), "end_date": end.isoformat(), "timezone": tz,
     }, timeout=40)
     df = add_cpcb_aqi(_hourly_frame(payload))
     return df[df.index >= pd.Timestamp(start)]
@@ -73,7 +73,8 @@ def fetch_history_city(city: str, start: date, end: date) -> dict:
     payload = _get(AQ_URL, {
         "latitude": ",".join(str(LOCATIONS[n]["lat"]) for n in names),
         "longitude": ",".join(str(LOCATIONS[n]["lon"]) for n in names),
-        "hourly": ",".join(HOURLY_VARS), "start_date": pad_start.isoformat(), "end_date": end.isoformat(), "timezone": TZ,
+        "hourly": ",".join(HOURLY_VARS), "start_date": pad_start.isoformat(), "end_date": end.isoformat(),
+        "timezone": CITIES[city]["tz"],
     }, timeout=60)
     if isinstance(payload, dict):
         payload = [payload]
@@ -91,11 +92,11 @@ def fetch_all_current(city: str = DEFAULT_CITY) -> pd.DataFrame:
     payload = _get(AQ_URL, {
         "latitude": ",".join(str(LOCATIONS[n]["lat"]) for n in names),
         "longitude": ",".join(str(LOCATIONS[n]["lon"]) for n in names),
-        "hourly": ",".join(HOURLY_VARS), "past_days": 1, "forecast_days": 1, "timezone": TZ,
+        "hourly": ",".join(HOURLY_VARS), "past_days": 1, "forecast_days": 1, "timezone": CITIES[city]["tz"],
     })
     if isinstance(payload, dict):
         payload = [payload]
-    now = pd.Timestamp.now(tz=TZ).tz_localize(None).floor("h")
+    now = pd.Timestamp.now(tz=CITIES[city]["tz"]).tz_localize(None).floor("h")
     rows = []
     for name, item in zip(names, payload):
         df = add_cpcb_aqi(_hourly_frame(item))
@@ -106,14 +107,46 @@ def fetch_all_current(city: str = DEFAULT_CITY) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def fetch_weather(lat, lon) -> dict:
+def fetch_weather(lat, lon, tz: str = TZ) -> dict:
     payload = _get(WX_URL, {
-        "latitude": lat, "longitude": lon, "timezone": TZ,
-        "current": "temperature_2m,relative_humidity_2m,apparent_temperature,wind_speed_10m,wind_direction_10m,surface_pressure,visibility,weather_code,is_day",
-        "hourly": "wind_speed_10m,wind_direction_10m,boundary_layer_height,relative_humidity_2m,visibility,temperature_2m",
+        "latitude": lat, "longitude": lon, "timezone": tz,
+        "current": "temperature_2m,relative_humidity_2m,apparent_temperature,wind_speed_10m,wind_direction_10m,surface_pressure,visibility,weather_code,is_day,cloud_cover,precipitation,uv_index",
+        "hourly": "wind_speed_10m,wind_direction_10m,boundary_layer_height,relative_humidity_2m,visibility,temperature_2m,uv_index,precipitation_probability",
         "past_days": 1, "forecast_days": 3,
     })
     return payload
+
+
+GEO_URL = "https://geocoding-api.open-meteo.com/v1/search"
+POLLEN_VARS = ["alder_pollen", "birch_pollen", "grass_pollen", "mugwort_pollen", "olive_pollen", "ragweed_pollen"]
+
+
+@st.cache_data(ttl=24 * 3600, show_spinner=False)
+def geocode(query: str, count: int = 8) -> list[dict]:
+    """Search any place on Earth (Open-Meteo geocoding, free)."""
+    if len(query.strip()) < 2:
+        return []
+    js = _get(GEO_URL, {"name": query.strip(), "count": count, "language": "en", "format": "json"})
+    out = []
+    for r in js.get("results", []) or []:
+        label = ", ".join(x for x in [r.get("name"), r.get("admin1"), r.get("country")] if x)
+        out.append({"name": r["name"], "label": label, "lat": r["latitude"], "lon": r["longitude"],
+                    "tz": r.get("timezone") or "UTC", "country": r.get("country", ""), "zone": r.get("admin1") or r.get("country", "")})
+    return out
+
+
+@st.cache_data(ttl=24 * 3600, show_spinner=False)
+def timezone_at(lat: float, lon: float) -> str:
+    js = _get(WX_URL, {"latitude": lat, "longitude": lon, "timezone": "auto", "current": "is_day"})
+    return js.get("timezone", "UTC")
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def fetch_pollen(lat, lon, tz: str = TZ) -> dict:
+    """Current pollen (only covered in Europe; returns {} elsewhere)."""
+    js = _get(AQ_URL, {"latitude": lat, "longitude": lon, "current": ",".join(POLLEN_VARS), "timezone": tz})
+    cur = js.get("current", {})
+    return {k: v for k, v in cur.items() if k in POLLEN_VARS and v is not None}
 
 
 # ── WAQI (optional, needs a free token from https://aqicn.org/data-platform/token/) ──
@@ -199,8 +232,8 @@ def save_waqi_token(token: str):
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def waqi_stations(token: str, city: str = DEFAULT_CITY) -> pd.DataFrame:
-    lat1, lon1, lat2, lon2 = CITIES[city]["bounds"]
+def waqi_stations(token: str, bounds: tuple) -> pd.DataFrame:
+    lat1, lon1, lat2, lon2 = bounds
     js = _get(f"{WAQI_URL}/map/bounds/", {"latlng": f"{lat1},{lon1},{lat2},{lon2}", "token": token})
     if js.get("status") != "ok":
         raise RuntimeError(js.get("data", "WAQI error"))

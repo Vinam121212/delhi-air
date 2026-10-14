@@ -12,6 +12,10 @@ EXPAND_CSS = """
   transition: opacity .3s, transform .4s cubic-bezier(.2,.9,.3,1.4); pointer-events: none; }
 .xp:hover .xp-hint { opacity: 1; transform: none; }
 .card.xp:hover { transform: perspective(900px) rotateX(var(--rx, 0deg)) rotateY(var(--ry, 0deg)) translateY(-4px) scale(1.015); }
+/* scroll reveal */
+.rv { opacity: 0 !important; transform: translateY(40px) scale(.96) !important; filter: blur(6px); animation: none !important; }
+.rv-in { animation: rvIn .85s cubic-bezier(.2,.9,.3,1.1) both !important; }
+@keyframes rvIn { from { opacity: 0; transform: translateY(40px) scale(.96); filter: blur(6px); } to { opacity: 1; transform: none; filter: none; } }
 .ripple { position: absolute; border-radius: 50%; pointer-events: none; z-index: 4; background: rgba(255,255,255,.35);
   transform: scale(0); animation: rip .6s ease-out forwards; }
 @keyframes rip { to { transform: scale(1); opacity: 0; } }
@@ -256,6 +260,38 @@ EXPAND_JS = r"""
     if (e.key === 'Escape') close(); else if (e.key === 'ArrowRight') step(1); else if (e.key === 'ArrowLeft') step(-1);
   });
   addEventListener('resize', () => { if (open) Object.assign(open.panel.style, px(targetRect())); });
+
+  // ── scroll reveal + count-up numbers ────────────────────────────────────────
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function countUp(el) {
+    if (el.dataset.counted) return; el.dataset.counted = '1';
+    const node = [...el.childNodes].find(n => n.nodeType === 3 && /\d/.test(n.textContent));
+    if (!node || reduce) return;
+    const m = node.textContent.match(/^(\D*)([\d,]*\.?\d+)(.*)$/s); if (!m) return;
+    const target = parseFloat(m[2].replace(/,/g, '')), dec = (m[2].split('.')[1] || '').length, t0 = performance.now();
+    const fmt = v => v.toLocaleString(undefined, {minimumFractionDigits: dec, maximumFractionDigits: dec});
+    (function tick(now) {
+      const p = Math.min(1, (now - t0) / 1100), e = 1 - Math.pow(1 - p, 3);
+      node.textContent = m[1] + fmt(target * e) + m[3];
+      if (p < 1) requestAnimationFrame(tick);
+    })(t0);
+  }
+  const io = new IntersectionObserver(entries => entries.forEach(en => {
+    if (!en.isIntersecting) return;
+    const el = en.target; io.unobserve(el);
+    el.classList.remove('rv'); el.classList.add('rv-in');
+    el.querySelectorAll('.card-value, .big, .xv-c').forEach(countUp);
+  }), {threshold: 0.12});
+  function scan() {
+    document.querySelectorAll('.card:not([data-rv]), [data-testid="stPlotlyChart"]:not([data-rv])').forEach(el => {
+      el.dataset.rv = '1';
+      if (el.closest('.xp-panel')) return;
+      if (el.getBoundingClientRect().top > innerHeight * 0.92 && !reduce) el.classList.add('rv');
+      io.observe(el);
+    });
+  }
+  new MutationObserver(() => requestAnimationFrame(scan)).observe(document.body, {childList: true, subtree: true});
+  scan();
 
   // 3D tilt following the pointer
   document.addEventListener('pointermove', e => {

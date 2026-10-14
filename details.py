@@ -32,6 +32,39 @@ TIPS = {
 }
 
 
+WMO = {0: ("☀️", "Clear"), 1: ("🌤️", "Mostly clear"), 2: ("⛅", "Partly cloudy"), 3: ("☁️", "Overcast"),
+       45: ("🌫️", "Fog"), 48: ("🌫️", "Freezing fog"), 51: ("🌦️", "Light drizzle"), 53: ("🌦️", "Drizzle"),
+       55: ("🌧️", "Heavy drizzle"), 56: ("🌧️", "Freezing drizzle"), 57: ("🌧️", "Freezing drizzle"),
+       61: ("🌦️", "Light rain"), 63: ("🌧️", "Rain"), 65: ("🌧️", "Heavy rain"), 66: ("🌧️", "Freezing rain"),
+       67: ("🌧️", "Freezing rain"), 71: ("🌨️", "Light snow"), 73: ("🌨️", "Snow"), 75: ("❄️", "Heavy snow"),
+       77: ("🌨️", "Snow grains"), 80: ("🌦️", "Showers"), 81: ("🌧️", "Heavy showers"), 82: ("⛈️", "Violent showers"),
+       85: ("🌨️", "Snow showers"), 86: ("❄️", "Heavy snow showers"), 95: ("⛈️", "Thunderstorm"),
+       96: ("⛈️", "Thunderstorm, hail"), 99: ("⛈️", "Severe thunderstorm")}
+POLLEN_NAMES = {"alder_pollen": "Alder", "birch_pollen": "Birch", "grass_pollen": "Grass", "mugwort_pollen": "Mugwort",
+                "olive_pollen": "Olive", "ragweed_pollen": "Ragweed"}
+
+
+def wmo(code, is_day=True):
+    e, txt = WMO.get(int(code or 0), ("🌡️", "—"))
+    if not is_day and int(code or 0) in (0, 1):
+        e = "🌙"
+    return e, txt
+
+
+def uv_level(uv):
+    if uv is None:
+        return "—", "#94a3b8", ""
+    return (("Low", "#4ade80", "No protection needed.") if uv < 3 else
+            ("Moderate", "#facc15", "Sunglasses and sunscreen at midday.") if uv < 6 else
+            ("High", "#fb923c", "Cover up and seek shade 11 AM–3 PM.") if uv < 8 else
+            ("Very high", "#f87171", "Avoid midday sun; SPF 30+.") if uv < 11 else
+            ("Extreme", "#c084fc", "Stay indoors at midday."))
+
+
+def pollen_level(v):
+    return ("Low", "#4ade80") if v < 20 else ("Moderate", "#facc15") if v < 80 else ("High", "#fb923c") if v < 200 else ("Very high", "#f87171")
+
+
 def _esc(s):
     return htmllib.escape(str(s), quote=True)
 
@@ -430,6 +463,50 @@ class DetailBuilder:
                         "can cut visibility below 1 km — and delaying flights. True fog is white and forms when air is near "
                         "100% humidity; north India's winter 'smog' is usually both at once.</p>")
         return {"title": "Visibility", "html": body, "summary": f"Visibility at {self.loc}: {_fmt((v or 0) / 1000, 1)} km."}
+
+    def weather_view(self):
+        hw = self._wx_hourly()
+        cw = self.wx.get("current", {})
+        e, txt = wmo(cw.get("weather_code"), bool(cw.get("is_day", 1)))
+        body = head(f"📍 {self.loc}", "Weather", f'{_fmt(cw.get("temperature_2m"))}<span class="xu">°C</span>',
+                    f"{e} {txt} · feels {_fmt(cw.get('apparent_temperature'))}°C", "#7dd3fc")
+        body += stat_grid([("Cloud cover", f"{_fmt(cw.get('cloud_cover'))}%", "", None),
+                           ("Precipitation", f"{_fmt(cw.get('precipitation'), 1)} mm", "last hour", None),
+                           ("Pressure", f"{_fmt(cw.get('surface_pressure'))} hPa", "", None),
+                           ("Wind", f"{_fmt(cw.get('wind_speed_10m'))} km/h", "", None)])
+        if hw is not None:
+            win = hw[(hw.index >= self.now - pd.Timedelta(hours=12)) & (hw.index <= self.now + pd.Timedelta(hours=48))]
+            body += section("Temperature (°C)", line_chart(list(win.index), [("Temperature", list(win["temperature_2m"]), "#fdba74")],
+                                                           now=self.now, unit="°C", ymin=float(np.nanmin(win["temperature_2m"])) - 2))
+            if "precipitation_probability" in win:
+                body += section("Chance of rain (%)", line_chart(list(win.index), [("Rain chance", list(win["precipitation_probability"]), "#60a5fa")],
+                                                                  now=self.now, unit="%"))
+        body += section("Weather and air", "<p>Rain washes particles out of the air, so AQI usually drops during and after rain. "
+                        "Hot, sunny, still days build ozone; cold, calm, clear nights trap smoke and exhaust near the ground.</p>")
+        return {"title": "Weather", "html": body, "summary": f"Weather at {self.loc}: {txt}, {_fmt(cw.get('temperature_2m'))}°C."}
+
+    def uv_view(self):
+        hw = self._wx_hourly()
+        uv = self.wx.get("current", {}).get("uv_index")
+        lvl, col, adv = uv_level(uv)
+        body = head(f"📍 {self.loc}", "UV index", _fmt(uv, 1), f"{lvl} · {adv}", col)
+        if hw is not None and "uv_index" in hw:
+            win = hw[(hw.index >= self.now - pd.Timedelta(hours=6)) & (hw.index <= self.now + pd.Timedelta(hours=48))]
+            body += section("UV index forecast", line_chart(list(win.index), [("UV", list(win["uv_index"]), "#c084fc")],
+                                                            now=self.now, hlines=[(6, "High", "#fb923c"), (8, "Very high", "#f87171")]))
+        body += section("UV and air pollution", "<p>Heavy haze blocks some UV, but don't rely on it. The same strong sunshine that "
+                        "raises UV also cooks traffic fumes into ground-level ozone, so high-UV afternoons are often high-ozone too.</p>")
+        return {"title": "UV index", "html": body, "summary": f"UV index at {self.loc}: {_fmt(uv, 1)} ({lvl})."}
+
+    def pollen_view(self, pollen: dict):
+        rows = [(POLLEN_NAMES[k], float(v), pollen_level(v)[1], f"{v:.0f}") for k, v in sorted(pollen.items(), key=lambda kv: -kv[1])]
+        top = rows[0] if rows else None
+        body = head(f"📍 {self.loc}", "Pollen", f"{top[3] if top else '—'}<span class='xu'>grains/m³</span>",
+                    f"{pollen_level(top[1])[0] if top else '—'} · mostly {top[0].lower() if top else '—'}", top[2] if top else "#94a3b8")
+        body += section("By type (grains/m³)", bar_rows(rows, max(200, max((r[1] for r in rows), default=1))) if rows else "<p>No data.</p>")
+        body += section("Pollen + pollution", "<p>Air pollution makes pollen more allergenic and inflames airways, so hay-fever "
+                        "symptoms are often worse on smoggy days. Keep windows shut in the early morning and shower after being outside.</p>")
+        return {"title": "Pollen", "html": body, "summary": f"Pollen at {self.loc}: {top[0] if top else '—'} {top[3] if top else ''}."}
 
     def main_pollutant(self):
         dom = self.cur.get("dominant")

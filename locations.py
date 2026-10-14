@@ -15,10 +15,46 @@ CITIES = {
     "Patna":      {"center": {"lat": 25.5941, "lon": 85.1376}, "zoom": 11, "bounds": (25.50, 84.95, 25.70, 85.30), "north": True},
 }
 DEFAULT_CITY = "Delhi NCR"
+for _c in CITIES.values():
+    _c.update(tz="Asia/Kolkata", country="India")
+
+# world cities: name → (lat, lon, zoom, tz, country, north-India-crop-fires?)
+_WORLD = {
+    "London": (51.5074, -0.1278, 9.8, "Europe/London", "United Kingdom"),
+    "Paris": (48.8566, 2.3522, 10.2, "Europe/Paris", "France"),
+    "Berlin": (52.5200, 13.4050, 10, "Europe/Berlin", "Germany"),
+    "New York": (40.7128, -74.0060, 9.8, "America/New_York", "United States"),
+    "Los Angeles": (34.0522, -118.2437, 9.2, "America/Los_Angeles", "United States"),
+    "Toronto": (43.6532, -79.3832, 10, "America/Toronto", "Canada"),
+    "Mexico City": (19.4326, -99.1332, 9.8, "America/Mexico_City", "Mexico"),
+    "São Paulo": (-23.5505, -46.6333, 9.6, "America/Sao_Paulo", "Brazil"),
+    "Lahore": (31.5204, 74.3587, 10.2, "Asia/Karachi", "Pakistan"),
+    "Karachi": (24.8607, 67.0011, 9.8, "Asia/Karachi", "Pakistan"),
+    "Dhaka": (23.8103, 90.4125, 10.4, "Asia/Dhaka", "Bangladesh"),
+    "Kathmandu": (27.7172, 85.3240, 11, "Asia/Kathmandu", "Nepal"),
+    "Beijing": (39.9042, 116.4074, 9.6, "Asia/Shanghai", "China"),
+    "Shanghai": (31.2304, 121.4737, 9.6, "Asia/Shanghai", "China"),
+    "Bangkok": (13.7563, 100.5018, 10, "Asia/Bangkok", "Thailand"),
+    "Jakarta": (-6.2088, 106.8456, 10, "Asia/Jakarta", "Indonesia"),
+    "Singapore": (1.3521, 103.8198, 10.4, "Asia/Singapore", "Singapore"),
+    "Tokyo": (35.6762, 139.6503, 9.6, "Asia/Tokyo", "Japan"),
+    "Seoul": (37.5665, 126.9780, 10, "Asia/Seoul", "South Korea"),
+    "Dubai": (25.2048, 55.2708, 9.8, "Asia/Dubai", "United Arab Emirates"),
+    "Cairo": (30.0444, 31.2357, 10, "Africa/Cairo", "Egypt"),
+    "Lagos": (6.5244, 3.3792, 10, "Africa/Lagos", "Nigeria"),
+    "Sydney": (-33.8688, 151.2093, 9.6, "Australia/Sydney", "Australia"),
+}
+for _name, (_lat, _lon, _zoom, _tz, _country) in _WORLD.items():
+    CITIES[_name] = {"center": {"lat": _lat, "lon": _lon}, "zoom": _zoom, "tz": _tz, "country": _country, "north": False,
+                     "bounds": (_lat - 0.35, _lon - 0.45, _lat + 0.35, _lon + 0.45)}
 
 
 def _city(city, rows):
     return {name: {"lat": lat, "lon": lon, "zone": zone, "city": city} for name, lat, lon, zone in rows}
+
+
+def tz_of(loc: dict) -> str:
+    return loc.get("tz") or CITIES.get(loc.get("city"), {}).get("tz", "Asia/Kolkata")
 
 
 LOCATIONS = {
@@ -87,6 +123,39 @@ LOCATIONS = {
         ("Patna City", 25.5960, 85.2290, "East"),
     ]),
 }
+
+
+# a few well-known neighbourhoods per world city (approximate centres)
+_WORLD_LOCS = {
+    "London": [("Westminster", 51.4975, -0.1357), ("Camden", 51.5390, -0.1426), ("Canary Wharf", 51.5054, -0.0235),
+               ("Heathrow", 51.4700, -0.4543)],
+    "Paris": [("Paris Centre", 48.8606, 2.3376), ("La Défense", 48.8919, 2.2380), ("Montmartre", 48.8867, 2.3431)],
+    "Berlin": [("Mitte", 52.5200, 13.4049), ("Kreuzberg", 52.4986, 13.4030), ("Charlottenburg", 52.5163, 13.3041)],
+    "New York": [("Midtown Manhattan", 40.7549, -73.9840), ("Brooklyn", 40.6782, -73.9442), ("Queens", 40.7282, -73.7949),
+                 ("The Bronx", 40.8448, -73.8648)],
+    "Los Angeles": [("Downtown LA", 34.0407, -118.2468), ("Santa Monica", 34.0195, -118.4912), ("Pasadena", 34.1478, -118.1445),
+                    ("Long Beach", 33.7701, -118.1937)],
+    "Toronto": [("Downtown Toronto", 43.6510, -79.3470), ("North York", 43.7615, -79.4111), ("Scarborough", 43.7764, -79.2318)],
+    "Mexico City": [("Centro Histórico", 19.4326, -99.1332), ("Polanco", 19.4333, -99.1950), ("Coyoacán", 19.3467, -99.1617)],
+    "São Paulo": [("Centro (São Paulo)", -23.5489, -46.6388), ("Pinheiros", -23.5674, -46.7019), ("Santo Amaro", -23.6543, -46.7096)],
+    "Lahore": [("Gulberg", 31.5204, 74.3487), ("Lahore Old City", 31.5820, 74.3294), ("DHA Lahore", 31.4697, 74.4061)],
+    "Karachi": [("Saddar", 24.8556, 67.0237), ("Clifton", 24.8138, 67.0300), ("Korangi", 24.8297, 67.1357)],
+    "Dhaka": [("Gulshan", 23.7925, 90.4078), ("Old Dhaka", 23.7104, 90.4074), ("Mirpur", 23.8223, 90.3654)],
+    "Kathmandu": [("Thamel", 27.7154, 85.3123), ("Lalitpur", 27.6644, 85.3188), ("Bhaktapur", 27.6710, 85.4298)],
+    "Beijing": [("Dongcheng", 39.9288, 116.4164), ("Chaoyang", 39.9215, 116.4434), ("Haidian", 39.9593, 116.2981)],
+    "Shanghai": [("Huangpu", 31.2317, 121.4846), ("Pudong", 31.2215, 121.5440), ("Xuhui", 31.1883, 121.4365)],
+    "Bangkok": [("Sukhumvit", 13.7380, 100.5600), ("Silom", 13.7246, 100.5300), ("Chatuchak", 13.8283, 100.5597)],
+    "Jakarta": [("Central Jakarta", -6.1865, 106.8341), ("South Jakarta", -6.2615, 106.8106), ("North Jakarta", -6.1384, 106.8630)],
+    "Singapore": [("Marina Bay", 1.2834, 103.8607), ("Jurong", 1.3329, 103.7436), ("Tampines", 1.3496, 103.9568)],
+    "Tokyo": [("Shinjuku", 35.6938, 139.7034), ("Shibuya", 35.6580, 139.7016), ("Tokyo Station", 35.6812, 139.7671)],
+    "Seoul": [("Jongno", 37.5730, 126.9794), ("Gangnam", 37.4979, 127.0276), ("Mapo", 37.5663, 126.9019)],
+    "Dubai": [("Downtown Dubai", 25.1972, 55.2744), ("Deira", 25.2711, 55.3075), ("Dubai Marina", 25.0805, 55.1403)],
+    "Cairo": [("Downtown Cairo", 30.0444, 31.2357), ("Giza", 30.0131, 31.2089), ("Heliopolis", 30.0911, 31.3225)],
+    "Lagos": [("Victoria Island", 6.4281, 3.4219), ("Ikeja", 6.6018, 3.3515), ("Lekki", 6.4698, 3.5852)],
+    "Sydney": [("Sydney CBD", -33.8688, 151.2093), ("Parramatta", -33.8150, 151.0011), ("Bondi", -33.8915, 151.2767)],
+}
+for _wcity, _locs in _WORLD_LOCS.items():
+    LOCATIONS.update(_city(_wcity, [(n, la, lo, _wcity) for n, la, lo in _locs]))
 
 
 def city_locations(city):

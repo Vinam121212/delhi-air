@@ -25,7 +25,9 @@ HI = {
     "Reading for": "रीडिंग", "checked": "जाँचा", "Hourly forecast": "घंटेवार पूर्वानुमान", "Now": "अभी",
     "day AQI forecast": "दिन का AQI पूर्वानुमान", "Today": "आज", "Main pollutant": "मुख्य प्रदूषक",
     "Cigarette equivalent": "सिगरेट के बराबर", "Since yesterday": "कल से", "Wind": "हवा", "Humidity": "नमी",
-    "Visibility": "दृश्यता", "AQI scale": "AQI पैमाना",
+    "Visibility": "दृश्यता", "Weather": "मौसम", "UV index": "UV इंडेक्स", "Pollen": "पराग", "Feels like": "महसूस",
+    "Search any place in the world": "दुनिया में कोई भी जगह खोजें", "Results": "परिणाम", "My location": "मेरा स्थान",
+    "Clear the search box to go back to the city list.": "शहरों की सूची पर लौटने के लिए खोज बॉक्स खाली करें।", "AQI scale": "AQI पैमाना",
     "Bars show each day's low → high AQI. White dot = now.": "बार हर दिन का न्यूनतम → अधिकतम AQI दिखाते हैं। सफ़ेद बिंदु = अभी।",
     "Tap any box for details": "विवरण के लिए किसी भी बॉक्स पर टैप करें",
     # categories

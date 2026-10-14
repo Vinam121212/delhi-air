@@ -14,6 +14,11 @@ uniform float uAqi;    // 0 (Good) .. 5 (Severe), eased
 uniform float uDay;    // 0 night .. 1 day
 uniform float uDusk;   // 0..1 sunrise / sunset warmth
 uniform vec2  uSun;    // sun (or moon) position in uv space
+uniform float uCloud;  // 0..1 real cloud cover
+uniform float uRain;   // 0..1
+uniform float uSnow;   // 0..1
+uniform float uStorm;  // 0..1 thunderstorm (lightning)
+uniform float uFog;    // 0..1
 
 float hash(vec2 p){ p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
 float noise(vec2 p){
@@ -85,7 +90,8 @@ void main(){
 
   // ── clouds (two parallax layers, lit from the sun / moon) ──────────────────
   float t = uTime * 0.008;
-  float cover = mix(0.62, 0.36, pol);            // worse air → more cloud / smog cover
+  float wet = max(uRain, max(uSnow, uStorm));
+  float cover = mix(0.62, 0.36, pol) - 0.30 * uCloud - 0.12 * wet;   // worse air or real clouds → more cover
   vec2 cp = p * vec2(1.1, 2.4);
   float far  = clouds(cp * 1.7 + 11.0, t * 0.6, cover + 0.06) * 0.55;
   float near = clouds(cp, t, cover);
@@ -101,6 +107,7 @@ void main(){
   vec3 lit = mix(litNight, litDay, uDay);
   vec3 shade = mix(shadeNight, shadeDay, uDay);
   lit = mix(lit, vec3(1.0, 0.72, 0.50), uDusk * 0.5);
+  shade *= 1.0 - 0.45 * wet; lit *= 1.0 - 0.35 * wet;          // rain clouds are dark and heavy
   vec3 cloudCol = mix(shade, lit, light);
   // silver lining near the sun
   cloudCol += sunCol * exp(-d * 5.0) * (1.0 - near) * near * 2.2 * uDay * sunVis;
@@ -123,6 +130,43 @@ void main(){
     float r = hash(cell);
     float speck = step(0.992, r) * smoothstep(0.5, 0.0, length(fract(gp) - 0.5));
     col += vec3(1.0, 0.85, 0.6) * speck * (pol - 0.35) * 0.35;
+  }
+
+  // ── weather: fog, rain, snow, lightning ─────────────────────────────────────
+  vec3 fogCol = mix(vec3(0.16, 0.17, 0.20), vec3(0.78, 0.80, 0.82), uDay);
+  col = mix(col, fogCol, uFog * (0.45 + 0.45 * (1.0 - uv.y)) * (0.8 + 0.2 * drift));
+  col = mix(col, col * 0.72, wet * 0.5);                                      // overcast gloom
+  if (uRain > 0.01) {
+    for (int k = 0; k < 2; k++) {
+      float sc = k == 0 ? 1.0 : 0.6;
+      vec2 rp = gl_FragCoord.xy / vec2(7.0 * sc, 46.0 * sc);
+      rp.x += rp.y * 0.18;
+      rp.y += uTime * (k == 0 ? 3.2 : 2.2);
+      vec2 id = floor(rp); vec2 f = fract(rp);
+      float r = hash(id + float(k) * 13.0);
+      float streak = step(1.0 - 0.35 * uRain, r) * smoothstep(0.08, 0.0, abs(f.x - fract(r * 7.3) * 0.8 - 0.1))
+                     * smoothstep(0.0, 0.25, f.y) * smoothstep(1.0, 0.45, f.y);
+      col += vec3(0.75, 0.8, 0.9) * streak * (k == 0 ? 0.33 : 0.18) * uRain;
+    }
+  }
+  if (uSnow > 0.01) {
+    for (int k = 0; k < 2; k++) {
+      float sc = k == 0 ? 26.0 : 15.0;
+      vec2 sp2 = gl_FragCoord.xy / sc;
+      sp2.y += uTime * (k == 0 ? 0.55 : 0.35);
+      sp2.x += sin(uTime * 0.7 + sp2.y * 1.3) * 0.25;
+      vec2 id = floor(sp2); vec2 f = fract(sp2) - 0.5;
+      float r = hash(id + float(k) * 7.0);
+      vec2 off = vec2(hash(id + 2.1), hash(id + 5.3)) - 0.5;
+      float flake = step(1.0 - 0.55 * uSnow, r) * smoothstep(k == 0 ? 0.13 : 0.09, 0.0, length(f - off * 0.6));
+      col += vec3(1.0) * flake * (k == 0 ? 0.85 : 0.55) * uSnow;
+    }
+  }
+  if (uStorm > 0.01) {
+    float slot = floor(uTime * 2.5);
+    float strike = step(0.965, hash(vec2(slot, 3.7)));
+    float flick = strike * (0.6 + 0.4 * sin(uTime * 60.0)) * smoothstep(1.0, 0.0, fract(uTime * 2.5) * 3.0);
+    col += vec3(0.8, 0.85, 1.0) * flick * uStorm * (0.35 + 0.65 * near);
   }
 
   // vignette + dithering to avoid banding
@@ -161,7 +205,7 @@ JS = r"""
   const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
   gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
   const loc = gl.getAttribLocation(prog, 'a'); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
-  const U = {}; ['uRes','uTime','uAqi','uDay','uDusk','uSun'].forEach(n => U[n] = gl.getUniformLocation(prog, n));
+  const U = {}; ['uRes','uTime','uAqi','uDay','uDusk','uSun','uCloud','uRain','uSnow','uStorm','uFog'].forEach(n => U[n] = gl.getUniformLocation(prog, n));
 
   const SCALE = 0.5;                       // render at half resolution; clouds are soft anyway
   function resize() { canvas.width = Math.max(2, innerWidth * SCALE); canvas.height = Math.max(2, innerHeight * SCALE);
@@ -176,12 +220,14 @@ JS = r"""
     requestAnimationFrame(frame);
     if (document.hidden || now - last < 1000 / 30) return;   // cap at 30 fps
     last = now;
-    for (const k of ['aqi','day','dusk','sx','sy']) cur[k] += (tgt[k] - cur[k]) * 0.04;
+    for (const k of ['aqi','day','dusk','sx','sy','cloud','rain','snow','storm','fog']) cur[k] += ((tgt[k] || 0) - (cur[k] || 0)) * 0.04;
     let t = (now - t0) / 1000 + 400;
     if (tgt.paused || reduce) { if (frozenAt === null) frozenAt = t; t = frozenAt; } else frozenAt = null;
     gl.uniform2f(U.uRes, canvas.width, canvas.height); gl.uniform1f(U.uTime, t);
     gl.uniform1f(U.uAqi, cur.aqi); gl.uniform1f(U.uDay, cur.day); gl.uniform1f(U.uDusk, cur.dusk);
     gl.uniform2f(U.uSun, cur.sx, cur.sy);
+    gl.uniform1f(U.uCloud, cur.cloud || 0); gl.uniform1f(U.uRain, cur.rain || 0); gl.uniform1f(U.uSnow, cur.snow || 0);
+    gl.uniform1f(U.uStorm, cur.storm || 0); gl.uniform1f(U.uFog, cur.fog || 0);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     canvas.style.opacity = '1';
   }
@@ -202,6 +248,25 @@ JS = r"""
 """
 
 
+RAIN = {51: .3, 53: .45, 55: .6, 56: .4, 57: .55, 61: .5, 63: .75, 65: 1, 66: .6, 67: .85, 80: .6, 81: .85, 82: 1,
+        95: .9, 96: 1, 99: 1}
+SNOW = {71: .45, 73: .7, 75: 1, 77: .4, 85: .65, 86: 1}
+PREVIEW = {"rain": {"rain": .9, "cloud": .9}, "snow": {"snow": .9, "cloud": .8}, "storm": {"rain": 1, "storm": 1, "cloud": 1},
+           "fog": {"fog": .9, "cloud": .5}, "clear": {}}
+
+
+def weather_state(current: dict | None, preview: str | None = None) -> dict:
+    """Map Open-Meteo current weather (WMO codes) to sky effect strengths 0..1."""
+    if preview in PREVIEW:
+        return {"cloud": 0, "rain": 0, "snow": 0, "storm": 0, "fog": 0, **PREVIEW[preview]}
+    c = current or {}
+    code = int(c.get("weather_code") or 0)
+    vis = c.get("visibility")
+    fog = .85 if code in (45, 48) else (.5 if vis is not None and vis < 2000 else 0)
+    return {"cloud": round((c.get("cloud_cover") or 0) / 100, 2), "rain": RAIN.get(code, 0), "snow": SNOW.get(code, 0),
+            "storm": 1.0 if code >= 95 else 0, "fog": fog}
+
+
 def sky_state(level: float, hour: float, paused: bool = False) -> dict:
     """Sky parameters for an AQI level (0-5) and local hour (0-24)."""
     # daylight: full between 6:30 and 17:30, ramps across dawn and dusk
@@ -219,6 +284,6 @@ def sky_state(level: float, hour: float, paused: bool = False) -> dict:
             "sx": round(sx, 3), "sy": round(sy, 3), "paused": paused}
 
 
-def sky_html(level: float, hour: float, paused: bool = False) -> str:
-    return (JS.replace("__TARGET__", json.dumps(sky_state(level, hour, paused)))
+def sky_html(level: float, hour: float, paused: bool = False, wx: dict | None = None) -> str:
+    return (JS.replace("__TARGET__", json.dumps({**sky_state(level, hour, paused), **(wx or {})}))
               .replace("__SHADER__", json.dumps(FRAGMENT_SHADER)))

@@ -67,6 +67,17 @@ python3 -m venv .venv
 - **Phone friendly**: tighter layout, two-column grids, and full-screen detail panels on small screens.
 - **Putting it online**: see [DEPLOY.md](DEPLOY.md).
 
+## Worldwide
+- **Search any place on Earth** (sidebar): cities, towns or postcodes, via Open-Meteo's free geocoding. Or pick one of 23 world
+  cities (London, New York, Beijing, Lahore, Lagos, Sydney…) next to the 10 Indian ones.
+- Times, forecasts and day/night follow each place's **local time zone**. The AQI defaults to **US EPA** outside India.
+- Live stations (WAQI) and NASA fire detection work worldwide. The Why? tab looks for fires within 500 km and checks
+  whether they're upwind.
+- **Sky with real weather**: rain, snow, thunderstorms with lightning, fog and cloud cover follow the live conditions. Preview them with
+  `?wx=rain|snow|storm|fog`.
+- New tiles: **weather**, **UV index**, and **pollen** in Europe; each expands into its own chart panel.
+- Cards reveal as you scroll and their numbers count up.
+
 ## Newest
 - **10 cities, 73 localities**: Delhi NCR (now with Noida, Gurugram, Ghaziabad and Faridabad), Mumbai, Bengaluru, Kolkata,
   Chennai, Hyderabad, Pune, Lucknow, Chandigarh and Patna. Pick the city at the top of the sidebar.

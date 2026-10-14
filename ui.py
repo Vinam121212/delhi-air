@@ -142,7 +142,8 @@ div[data-testid="stMetric"] { padding: .9rem 1.1rem; }
 [data-baseweb="popover"] [role="listbox"], [data-baseweb="popover"] ul {
   background: rgba(30,40,70,.72) !important; backdrop-filter: blur(24px) saturate(180%); border-radius: 16px !important;
 }
-[data-testid="stSegmentedControl"] button, [data-testid="stPills"] button, .stButton button, .stDownloadButton button {
+[data-testid="stSegmentedControl"] button, [data-testid="stPills"] button, .stButton button, .stDownloadButton button,
+[data-testid="stPopover"] button, .stLinkButton a {
   background: rgba(255,255,255,.12); border-color: rgba(255,255,255,.22) !important; color: #fff; border-radius: 999px !important;
   backdrop-filter: blur(14px); box-shadow: inset 0 1px 0 rgba(255,255,255,.3);
 }
