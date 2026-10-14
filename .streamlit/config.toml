@@ -1,0 +1,16 @@
+[theme]
+base = "dark"
+primaryColor = "#7dd3fc"
+backgroundColor = "#0b1630"
+secondaryBackgroundColor = "#2a3a5e"
+textColor = "#ffffff"
+font = "-apple-system, BlinkMacSystemFont, Inter, Helvetica Neue, sans-serif"
+headingFont = "-apple-system, BlinkMacSystemFont, Inter, Helvetica Neue, sans-serif"
+baseRadius = "large"
+
+[server]
+headless = true
+runOnSave = true
+
+[browser]
+gatherUsageStats = false
