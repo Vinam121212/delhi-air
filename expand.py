@@ -203,7 +203,7 @@ EXPAND_JS = r"""
 
   function copy() {
     if (!open) return;
-    const s = window.__aqiDetails[open.key].summary + ' — via Delhi Air dashboard';
+    const s = window.__aqiDetails[open.key].summary + ' — via AQIfyMe';
     (navigator.clipboard ? navigator.clipboard.writeText(s) : Promise.reject()).then(() => toast('Summary copied'), () => toast('Copy not available'));
   }
   function toast(msg) {

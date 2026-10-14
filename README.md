@@ -1,4 +1,8 @@
-# 🌫️ Delhi AQI Dashboard
+# 🌤️ AQIfyMe
+
+**AQI + verify + me**: verified air-quality information, made for you. A live air-quality site for 25 Delhi localities, built with Python and Streamlit.
+
+Live at **https://aqifyme.streamlit.app**
 
 A live air-quality dashboard for 25 Delhi localities, built with Python + Streamlit.
 

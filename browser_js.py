@@ -84,7 +84,7 @@ def alerts_html(cfg: dict) -> str:
     if (!('Notification' in window) || Notification.permission !== 'granted') return;
     const key = 'aqi-alert-' + c.hour_key + (now ? '-now' : '-soon');
     try { if (localStorage.getItem(key)) return; localStorage.setItem(key, '1'); } catch (e) {}
-    new Notification('Delhi Air · AQI alert', {body: msg, tag: 'aqi-alert'});
+    new Notification('AQIfyMe · AQI alert', {body: msg, tag: 'aqi-alert'});
   }
   notify();
 })();

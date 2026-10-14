@@ -1,4 +1,4 @@
-# Putting Delhi Air online (free, ~10 minutes)
+# Putting AQIfyMe online (free, ~10 minutes)
 
 Streamlit Community Cloud hosts the site for free and gives you a link that works on any phone or computer, 24/7.
 

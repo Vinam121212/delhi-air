@@ -1,4 +1,4 @@
-"""Delhi Air Quality Dashboard — run with:  streamlit run app.py"""
+"""AQIfyMe — verified air-quality information for Delhi. Run with:  streamlit run app.py"""
 from datetime import date, timedelta
 
 import numpy as np
@@ -18,13 +18,16 @@ import health_log as hl
 from planner import ACTIVITIES, dose_ug, find_slots, verdict
 from i18n import set_lang, t
 from expand import EXPAND_CSS, expand_html
+from intro import INTRO_CSS, intro_html
 from sky import sky_html
 from ui import CSS, compact, hex_to_rgba, scale_html, style_fig
 
-st.set_page_config(page_title="Delhi AQI · Live Air Quality", page_icon="🌫️", layout="wide",
+st.set_page_config(page_title="AQIfyMe · Delhi air quality", page_icon="🌤️", layout="wide",
                    initial_sidebar_state="expanded")
 st.markdown(CSS, unsafe_allow_html=True)
 st.markdown(EXPAND_CSS, unsafe_allow_html=True)
+st.markdown(INTRO_CSS, unsafe_allow_html=True)
+st.html(intro_html(), unsafe_allow_javascript=True)   # plays once per session, before the page fades in
 
 TZ = data.TZ
 CHART_CFG = {"displayModeBar": False}
@@ -46,7 +49,7 @@ with st.sidebar:
     lang_choice = st.segmented_control("Language", ["English", "हिन्दी"], default="English", key="lang",
                                        label_visibility="collapsed") or "English"
     set_lang(lang_choice)
-    st.markdown(f"<div class='brand'><div class='brand-icon'></div><div><div class='brand-name'>Delhi Air</div>"
+    st.markdown(f"<div class='brand'><div class='brand-icon'></div><div><div class='brand-name' title='Tap to replay the intro'><span class='a'>AQI</span><span class='f'>fy</span><span class='m'>Me</span></div>"
                 f"<div class='brand-sub'>{t('Live air-quality intelligence')}</div></div></div>", unsafe_allow_html=True)
 
     st.markdown(f"#### {t('Location')}")
@@ -981,6 +984,15 @@ def render_history():
 # Learn
 # ══════════════════════════════════════════════════════════════════════════════
 def render_learn():
+    st.markdown(compact("""<div class="card" style="text-align:center;padding:1.8rem 1.4rem;margin-bottom:1.4rem">
+      <div class="brand-name" style="font-size:2.6rem;letter-spacing:-.03em"><span class="a">AQI</span><span class="f">fy</span><span class="m">Me</span></div>
+      <div style="display:flex;justify-content:center;gap:.8rem;flex-wrap:wrap;margin:1rem 0">
+        <span class="chip" style="font-size:.85rem;padding:.35rem .8rem"><b>AQI</b> · the air you breathe</span>
+        <span class="chip" style="font-size:.85rem;padding:.35rem .8rem"><b>-fy</b> · as in veri<b>fy</b></span>
+        <span class="chip" style="font-size:.85rem;padding:.35rem .8rem"><b>Me</b> · for you</span></div>
+      <div class="summary">Verified air-quality information, made for you: live readings, forecasts, causes and
+      health advice for 25 Delhi localities, in one place. Tap the logo in the sidebar to replay the intro.</div></div>"""),
+                unsafe_allow_html=True)
     st.markdown("<h2 class='hero-title' style='font-size:1.8rem'>📚 Understand the air you breathe</h2>", unsafe_allow_html=True)
     st.write("")
     st.markdown("##### The AQI scales")
@@ -1044,6 +1056,7 @@ else:
      "📚 Learn": render_learn}[view]()
 
 st.markdown("""<div class="footer">
+  <b>AQIfyMe</b> · verified air-quality information, made for you<br>
   Data: <a href="https://open-meteo.com/en/docs/air-quality-api" target="_blank">Open-Meteo</a> ·
   Copernicus Atmosphere Monitoring Service (CAMS) · weather by Open-Meteo ·
   optional live stations via <a href="https://aqicn.org" target="_blank">WAQI</a>.<br>
